@@ -39,4 +39,3 @@ if st.button("Analyze"):
         st.write(ip)
     else:
         st.error("Failed to retrieve data")
-``
