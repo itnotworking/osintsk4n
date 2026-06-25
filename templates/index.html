@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>OSINT Domain Analyzer</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <h1>🔍 OSINT Domain Analyzer</h1>
+  <p>Threat intel + infrastructure analysis</p>
+</header>
+
+<section class="input">
+  <input id="domain" placeholder="example.com">
+  <button onclick="analyze()">Analyze</button>
+</section>
+
+<section id="loading" class="hidden">Running analysis...</section>
+
+<section id="result" class="hidden">
+  <div id="risk" class="risk"></div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>🌐 Infrastructure</h3>
+      <pre id="infra"></pre>
+    </div>
+    <div class="card">
+      <h3>📨 DNS</h3>
+      <pre id="dns"></pre>
+    </div>
+    <div class="card">
+      <h3>🛡️ VirusTotal</h3>
+      <pre id="vt"></pre>
+    </div>
+    <div class="card">
+      <h3>🚨 AbuseIPDB</h3>
+      <pre id="abuse"></pre>
+    </div>
+    <div class="card">
+      <h3>📜 WHOIS / RDAP</h3>
+      <pre id="rdap"></pre>
+    </div>
+    <div class="card">
+      <h3>🔗 Quick Links</h3>
+      <div id="links"></div>
+    </div>
+  </div>
+</section>
+
+<script>
+async function analyze() {
+  const domain = document.getElementById("domain").value.trim();
+  if (!domain) return;
+
+  document.getElementById("loading").classList.remove("hidden");
+  document.getElementById("result").classList.add("hidden");
+
+  const form = new FormData();
+  form.append("domain", domain);
+
+  const res = await fetch("/analyze", { method: "POST", body: form });
+  const data = await res.json();
+
+  document.getElementById("loading").classList.add("hidden");
+  document.getElementById("result").classList.remove("hidden");
+
+  const risk = document.getElementById("risk");
+  risk.className = "risk " + data.risk;
+  risk.innerText = "Risk: " + data.risk.toUpperCase() +
+    (data.reasons.length ? " — " + data.reasons.join(" • ") : "");
+
+  document.getElementById("infra").innerText =
+`IP: ${data.ip || "N/A"}
+Country: ${data.info?.country || "?"}
+Region/City: ${data.info?.regionName || "?"} / ${data.info?.city || "?"}
+ISP: ${data.info?.isp || "?"}
+Org: ${data.info?.org || "?"}
+ASN: ${data.info?.as || "?"}`;
+
+  document.getElementById("dns").innerText =
+`A: ${(data.a||[]).join(", ") || "None"}
+MX: ${(data.mx||[]).join(", ") || "None"}
+NS: ${(data.ns||[]).join(", ") || "None"}
+TXT: ${(data.txt||[]).join(" | ") || "None"}
+DMARC: ${(data.dmarc||[]).join(" | ") || "None"}`;
+
+  const vt = data.vt?.last_analysis_stats;
+  document.getElementById("vt").innerText = vt
+    ? `Malicious: ${vt.malicious}
+Suspicious: ${vt.suspicious}
+Harmless: ${vt.harmless}
+Undetected: ${vt.undetected}`
+    : "No VT data";
+
+  const ab = data.abuse;
+  document.getElementById("abuse").innerText = ab
+    ? `Score: ${ab.abuseConfidenceScore}/100
+Reports: ${ab.totalReports}
+Country: ${ab.countryCode}
+Usage: ${ab.usageType}`
+    : "No AbuseIPDB data";
+
+  const rd = data.rdap;
+  let rdapText = "No RDAP data";
+  if (rd && rd.events) {
+    const e = {};
+    rd.events.forEach(x => e[x.eventAction] = x.eventDate);
+    rdapText =
+`Registered: ${e.registration || "?"}
+Last Changed: ${e["last changed"] || "?"}
+Expires: ${e.expiration || "?"}`;
+  }
+  document.getElementById("rdap").innerText = rdapText;
+
+  document.getElementById("links").innerHTML = `
+    https://www.virustotal.com/gui/domain/${data.domain}<br>
+    https://mxtoolbox.com/SuperTool.aspx?action=mx%3a${data.domain}<br>
+    https://urlscan.io/domain/${data.domain}<br>
+    https://www.abuseipdb.com/check/${data.ip || ""}<br>
+    https://talosintelligence.com/reputation_center/lookup?search=${data.domain}<br>
+    https://search.censys.io/search?q=${data.domain}<br>
+    https://www.shodan.io/search?query=${data.domain}
+  `;
+}
+</script>
+
+</body>
+</html>
