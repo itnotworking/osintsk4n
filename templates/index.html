@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <title>OSINT Domain Analyzer</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+leapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 /static/style.css
 </head>
 <body>
@@ -33,7 +35,7 @@ async function analyze() {
 
   const btn = $("analyzeBtn");
   btn.disabled = true;
-  $("status").innerHTML = `<span class="dot"></span><span class="scanning">Scanning ${domain}</span>`;
+  $("status").innerHTML = '<span class="dot"></span><span class="scanning">Scanning ' + domain + '</span>';
   $("result").innerHTML = "";
   $("risk").classList.add("hidden");
 
@@ -43,12 +45,11 @@ async function analyze() {
   try {
     const res = await fetch("/analyze", { method: "POST", body: form });
     const data = await res.json();
-
     renderRisk(data);
     renderCards(data);
-    $("status").innerHTML = `✓ Completed scan for <b>${domain}</b>`;
+    $("status").innerHTML = '✓ Completed scan for <b>' + domain + '</b>';
   } catch (e) {
-    $("status").innerHTML = `✗ Error analyzing ${domain}`;
+    $("status").innerHTML = '✗ Error analyzing ' + domain;
   } finally {
     btn.disabled = false;
   }
@@ -57,8 +58,8 @@ async function analyze() {
 function renderRisk(data) {
   const r = $("risk");
   r.className = "risk fade-in " + data.risk;
-  r.innerHTML = `Risk: <b>${data.risk.toUpperCase()}</b>` +
-    (data.reasons.length ? `  ·  ${data.reasons.join(" · ")}` : "");
+  r.innerHTML = "Risk: <b>" + data.risk.toUpperCase() + "</b>" +
+    (data.reasons.length ? "  ·  " + data.reasons.join(" · ") : "");
 }
 
 function renderCards(data) {
@@ -67,19 +68,19 @@ function renderCards(data) {
 
   const cards = [
     { title: "Infrastructure", body:
-`IP:        ${data.ip || "N/A"}
-Country:   ${data.info?.country || "?"}
-City:      ${data.info?.regionName || "?"} / ${data.info?.city || "?"}
-ISP:       ${data.info?.isp || "?"}
-Org:       ${data.info?.org || "?"}
-ASN:       ${data.info?.as || "?"}`
+      "IP:        " + (data.ip || "N/A") + "\n" +
+      "Country:   " + (data.info?.country || "?") + "\n" +
+      "City:      " + (data.info?.regionName || "?") + " / " + (data.info?.city || "?") + "\n" +
+      "ISP:       " + (data.info?.isp || "?") + "\n" +
+      "Org:       " + (data.info?.org || "?") + "\n" +
+      "ASN:       " + (data.info?.as || "?")
     },
     { title: "DNS", body:
-`A:     ${(data.a||[]).join(", ") || "None"}
-MX:    ${(data.mx||[]).join(", ") || "None"}
-NS:    ${(data.ns||[]).join(", ") || "None"}
-TXT:   ${(data.txt||[]).join(" | ") || "None"}
-DMARC: ${(data.dmarc||[]).join(" | ") || "None"}`
+      "A:     " + ((data.a||[]).join(", ") || "None") + "\n" +
+      "MX:    " + ((data.mx||[]).join(", ") || "None") + "\n" +
+      "NS:    " + ((data.ns||[]).join(", ") || "None") + "\n" +
+      "TXT:   " + ((data.txt||[]).join(" | ") || "None") + "\n" +
+      "DMARC: " + ((data.dmarc||[]).join(" | ") || "None")
     },
     { title: "VirusTotal", body: vtBlock(data.vt) },
     { title: "AbuseIPDB", body: abuseBlock(data.abuse) },
@@ -90,7 +91,7 @@ DMARC: ${(data.dmarc||[]).join(" | ") || "None"}`
   cards.forEach(c => {
     const div = document.createElement("div");
     div.className = "card fade-in";
-    div.innerHTML = `<h3>${c.title}</h3><pre>${c.body}</pre>`;
+    div.innerHTML = "<h3>" + c.title + "</h3><pre>" + c.body + "</pre>";
     out.appendChild(div);
   });
 }
@@ -98,40 +99,42 @@ DMARC: ${(data.dmarc||[]).join(" | ") || "None"}`
 function vtBlock(v) {
   if (!v) return "No VT data";
   const s = v.last_analysis_stats || {};
-  return `Malicious:  ${s.malicious||0}
-Suspicious: ${s.suspicious||0}
-Harmless:   ${s.harmless||0}
-Undetected: ${s.undetected||0}`;
+  return "Malicious:  " + (s.malicious||0) + "\n" +
+         "Suspicious: " + (s.suspicious||0) + "\n" +
+         "Harmless:   " + (s.harmless||0) + "\n" +
+         "Undetected: " + (s.undetected||0);
 }
 
 function abuseBlock(a) {
   if (!a) return "No AbuseIPDB data";
-  return `Score:    ${a.abuseConfidenceScore}/100
-Reports:  ${a.totalReports}
-Country:  ${a.countryCode}
-Usage:    ${a.usageType}`;
+  return "Score:    " + a.abuseConfidenceScore + "/100\n" +
+         "Reports:  " + a.totalReports + "\n" +
+         "Country:  " + a.countryCode + "\n" +
+         "Usage:    " + a.usageType;
 }
 
 function rdapBlock(r) {
   if (!r || !r.events) return "No RDAP data";
   const e = {};
   r.events.forEach(x => e[x.eventAction] = x.eventDate);
-  return `Registered:   ${e.registration || "?"}
-Last Changed: ${e["last changed"] || "?"}
-Expires:      ${e.expiration || "?"}`;
+  return "Registered:   " + (e.registration || "?") + "\n" +
+         "Last Changed: " + (e["last changed"] || "?") + "\n" +
+         "Expires:      " + (e.expiration || "?");
 }
 
 function linksBlock(d) {
   const links = [
-    ["VirusTotal", `https://www.virustotal.com/gui/domain/${d.domain}`],
-    ["MXToolbox",  `https://mxtoolbox.com/SuperTool.aspx?action=mx%3a${d.domain}`],
-    ["URLScan",    `https://urlscan.io/domain/${d.domain}`],
-    ["AbuseIPDB",  `https://www.abuseipdb.com/check/${d.ip || ""}`],
-    ["Talos",      `https://talosintelligence.com/reputation_center/lookup?search=${d.domain}`],
-    ["Censys",     `https://search.censys.io/search?q=${d.domain}`],
-    ["Shodan",     `https://www.shodan.io/search?query=${d.domain}`]
+    ["VirusTotal", "https://www.virustotal.com/gui/domain/" + d.domain],
+    ["MXToolbox",  "https://mxtoolbox.com/SuperTool.aspx?action=mx%3a" + d.domain],
+    ["URLScan",    "https://urlscan.io/domain/" + d.domain],
+    ["AbuseIPDB",  "https://www.abuseipdb.com/check/" + (d.ip || "")],
+    ["Talos",      "https://talosintelligence.com/reputation_center/lookup?search=" + d.domain],
+    ["Censys",     "https://search.censys.io/search?q=" + d.domain],
+    ["Shodan",     "https://www.shodan.io/search?query=" + d.domain]
   ];
-  return links.map(([k,u]) => `${k}`).join("\n");
+  return links.map(function(item){
+    return '<a href="' + item[1] + '" target="_blank" rel="noopener">' + item[0] + '</a>';
+  }).join("\n");
 }
 </script>
 
