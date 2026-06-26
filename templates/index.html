@@ -145,8 +145,10 @@ function cards(d) {
   out.push(card("DNS Records",
     kvrow("A", (d.a||[]).join(", ") || "None") +
     kvrow("AAAA", (d.aaaa||[]).join(", ") || "None") +
+    kvrow("CNAME", (d.cname||[]).join(", ") || "None") +
     kvrow("MX", (d.mx||[]).join("  ") || "None") +
     kvrow("NS", (d.ns||[]).join("  ") || "None") +
+    kvrow("SOA", (d.soa||[]).join("  ") || "None") +
     kvrow("TXT", (d.txt||[]).map(esc).join("\n") || "None")
   ));
 

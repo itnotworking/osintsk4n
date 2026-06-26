@@ -677,6 +677,8 @@ def analyze(raw_input):
         "aaaa":  _executor.submit(dns_lookup, domain, "AAAA"),
         "mx":    _executor.submit(dns_lookup, domain, "MX"),
         "ns":    _executor.submit(dns_lookup, domain, "NS"),
+        "cname": _executor.submit(dns_lookup, domain, "CNAME"),
+        "soa":   _executor.submit(dns_lookup, domain, "SOA"),
         "txt":   _executor.submit(dns_txt_raw, domain, "TXT"),
         "dmarc": _executor.submit(dns_txt_raw, f"_dmarc.{domain}", "TXT"),
         "vt":    _executor.submit(check_vt_domain, domain),
@@ -708,7 +710,8 @@ def analyze(raw_input):
         "defanged": defang(parsed["normalized"]),
         # raw data
         "a": res["a"], "aaaa": res["aaaa"], "mx": res["mx"],
-        "ns": res["ns"], "txt": res["txt"], "dmarc": res["dmarc"],
+        "ns": res["ns"], "cname": res["cname"], "soa": res["soa"],
+        "txt": res["txt"], "dmarc": res["dmarc"],
         "vt": res["vt"], "rdap_events": rdap_events(res["rdap"]),
         "registrar": rdap_registrar(res["rdap"]),
         "info": res["info"], "abuse": res["abuse"],
