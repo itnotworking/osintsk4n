@@ -14,6 +14,12 @@
     <img src="/static/favicon.svg" alt="" class="logo" width="26" height="26">
     <span class="name">SC<span>4N</span></span>
   </h1>
+  <div class="hdr-rail">
+    <div class="clock" id="clock" title="Click to copy ISO 8601 UTC timestamp (for ticket/log notes)">
+      <div class="ck utc"><span class="z">UTC</span><span class="t" id="ckUTC">--:--:--</span></div>
+      <div class="ck local"><span class="z" id="ckLZ">LOCAL</span><span class="t" id="ckLOCAL">--:--:--</span></div>
+    </div>
+  </div>
 </header>
 
 <div class="wrap">
@@ -186,12 +192,7 @@ function cards(d) {
   if (d.crtsh && d.crtsh.subdomains && d.crtsh.subdomains.length)
     out.push(card("Subdomains (crt.sh)", crtBlock(d.crtsh)));
 
-  const ticket =
-    '<div class="ticket fade-in"><div class="ticket-h"><span>Ticket Summary</span>' +
-    '<button class="copybtn" onclick="copySummary()">Copy</button></div>' +
-    '<pre id="ticket">' + esc(d.ticket_summary) + '</pre></div>';
-
-  return '<div class="grid">' + out.join("") + '</div>' + ticket;
+  return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
 }
 
 function card(title, body) {
@@ -311,6 +312,135 @@ function crtBlock(c) {
   return '<div class="kv"><div class="k">Total</div><div class="v">' + c.count + '</div></div>' +
     '<div class="subs" style="margin-top:8px">' + c.subdomains.map(s => '<div>' + esc(s) + '</div>').join("") + '</div>';
 }
+/* ---------- ticket summary: three audiences ---------- */
+let ticketFmts = {};
+
+function buildTicket(d) {
+  ticketFmts = {
+    analyst: d.ticket_summary || fmtAnalyst(d),
+    servicenow: fmtServiceNow(d),
+    stakeholder: fmtStakeholder(d),
+  };
+  const tabs = [
+    ["analyst", "SOC Analyst"],
+    ["servicenow", "ServiceNow"],
+    ["stakeholder", "Stakeholder"],
+  ].map(function (t, i) {
+    return '<button class="ttab' + (i === 0 ? ' active' : '') + '" data-fmt="' + t[0] +
+      '" onclick="selectTicket(\'' + t[0] + '\')">' + t[1] + '</button>';
+  }).join("");
+  return '<div class="ticket fade-in"><div class="ticket-h">' +
+    '<span class="thd">Ticket Summary</span>' +
+    '<div class="ticket-tabs">' + tabs +
+    '<button class="copybtn" onclick="copySummary()">Copy</button></div></div>' +
+    '<pre id="ticket" class="ticket-body">' + esc(ticketFmts.analyst) + '</pre></div>';
+}
+
+function selectTicket(fmt) {
+  const t = $("ticket");
+  if (t) t.textContent = ticketFmts[fmt] || "";
+  document.querySelectorAll('.ttab').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-fmt') === fmt);
+  });
+}
+
+function recAction(d) {
+  return ({
+    "Likely Malicious": "Block domain/sender at Mimecast and CrowdStrike Falcon; search & purge delivered messages; hunt for prior clicks/interaction.",
+    "Suspicious": "Quarantine pending review; verify legitimacy out-of-band with the recipient/sender; monitor for related indicators.",
+    "Low–Moderate": "Low confidence of malice; document and monitor; release if quarantined and contextually expected.",
+    "Likely Legitimate": "No action required; treat as legitimate. Release from quarantine if held."
+  })[d.verdict] || "Review manually.";
+}
+
+function authLine(d) {
+  return "DMARC " + (d.dmarc_parsed ? "p=" + d.dmarc_parsed.policy : "MISSING") +
+    ", SPF " + (d.spf_parsed ? "present" : "MISSING") +
+    ", DKIM " + (d.dkim && d.dkim.length ? "present" : "none found");
+}
+
+function fmtAnalyst(d) {
+  // fallback if server summary missing
+  const i = d.info || {};
+  const L = [];
+  L.push("IOC:      " + d.defanged + "  (" + d.kind + ")");
+  L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  if (d.ip) L.push("Hosting:  " + d.ip + "  [" + (i.country || "?") + " · " + (i.org || i.isp || "?") + "]");
+  if (d.registered) L.push("Domain:   registered " + d.registered.slice(0, 10) + (d.age_days != null ? " (" + d.age_days + "d old)" : ""));
+  if (d.mx_provider) L.push("Mail:     " + d.mx_provider);
+  L.push("Auth:     " + authLine(d));
+  if (d.bec && d.bec.length) L.push("BEC:      " + d.bec.join("; "));
+  if (d.reasons && d.reasons.length) L.push("Signals:  " + d.reasons.join(" | "));
+  return L.join("\n");
+}
+
+function fmtServiceNow(d) {
+  const pri = ({
+    "Likely Malicious": "2 - High", "Suspicious": "3 - Moderate",
+    "Low–Moderate": "4 - Low", "Likely Legitimate": "5 - Planning"
+  })[d.verdict] || "4 - Low";
+  const i = d.info || {};
+  const L = [];
+  L.push("Short description: [SC4N] " + d.kind + " triage: " + d.domain + " — " + d.verdict + " (" + d.score + "/100)");
+  L.push("Category:          Security Incident — Email/Web Triage");
+  L.push("Priority:          " + pri);
+  L.push("Configuration item: " + d.domain);
+  L.push("");
+  L.push("Work notes:");
+  L.push("- IOC: " + d.defanged + " (" + d.kind + ")");
+  L.push("- Verdict: " + d.verdict + " — risk " + d.score + "/100");
+  if (d.ip) L.push("- Hosting: " + d.ip + " (" + (i.country || "?") + ", " + (i.org || i.isp || "?") + ")");
+  if (d.registered) L.push("- Domain age: " + (d.age_days != null ? d.age_days + " days" : "?") + " (registered " + d.registered.slice(0, 10) + ")");
+  L.push("- Email auth: " + authLine(d));
+  if (d.urlscan && d.urlscan.redirect && d.urlscan.redirect.offsite) L.push("- Off-domain redirect: lands on " + d.urlscan.redirect.to_reg);
+  if (d.bec && d.bec.length) L.push("- BEC indicators: " + d.bec.join("; "));
+  if (d.reasons && d.reasons.length) L.push("- Signals: " + d.reasons.join("; "));
+  L.push("- Recommended action: " + recAction(d));
+  return L.join("\n");
+}
+
+function stakeholderPoints(d) {
+  const pts = [];
+  if (d.age_days != null) {
+    if (d.age_days < 90) pts.push("The domain was registered very recently (" + d.age_days + " days ago) — a common trait of fraudulent or throwaway sites.");
+    else pts.push("The domain has been established for " + Math.floor(d.age_days / 365) + "+ years, consistent with a legitimate organization.");
+  }
+  const dmarcBad = !d.dmarc_parsed || (d.dmarc_parsed.policy || "none").toLowerCase() === "none";
+  if (dmarcBad || !d.spf_parsed) pts.push("Its email protections are incomplete, so messages claiming to come from it can be more easily spoofed.");
+  else pts.push("Its email protections (SPF/DKIM/DMARC) are properly configured, making impersonation difficult.");
+  if (d.urlscan && d.urlscan.redirect && d.urlscan.redirect.offsite) pts.push("When opened, the link sends users to an unrelated website (" + d.urlscan.redirect.to_reg + ") — a hallmark of scams and parked domains.");
+  if (d.vt && (d.vt.last_analysis_stats || {}).malicious > 0) pts.push("Security vendors have flagged this domain as malicious.");
+  if (d.abuse && (d.abuse.abuseConfidenceScore || 0) >= 25) pts.push("The hosting address has been reported for abusive activity.");
+  if (!pts.length || (d.verdict === "Likely Legitimate" && pts.length < 2)) pts.push("No threat-intelligence sources flagged it, and its infrastructure looks normal.");
+  return pts.slice(0, 5);
+}
+
+function stakeholderAction(d) {
+  return ({
+    "Likely Malicious": "Do not click links or reply. Block the sender and report to the security team.",
+    "Suspicious": "Treat with caution — verify through a known, trusted contact before acting, and do not enter credentials.",
+    "Low–Moderate": "Proceed with normal caution.",
+    "Likely Legitimate": "No special action needed; this can be treated as legitimate."
+  })[d.verdict] || "Refer to the security team.";
+}
+
+function fmtStakeholder(d) {
+  const plain = ({
+    "Likely Malicious": "LIKELY MALICIOUS", "Suspicious": "SUSPICIOUS",
+    "Low–Moderate": "LOW-TO-MODERATE RISK", "Likely Legitimate": "LIKELY LEGITIMATE"
+  })[d.verdict] || d.verdict;
+  const L = [];
+  L.push("Subject: Security assessment of " + d.defanged);
+  L.push("");
+  L.push("We reviewed " + d.defanged + " and assess it as " + plain + " (risk score " + d.score + " out of 100).");
+  L.push("");
+  L.push("What we found:");
+  stakeholderPoints(d).forEach(function (p) { L.push("• " + p); });
+  L.push("");
+  L.push("Recommended action: " + stakeholderAction(d));
+  return L.join("\n");
+}
+
 function copySummary() {
   const t = $("ticket");
   if (t) navigator.clipboard.writeText(t.textContent).then(() => {
@@ -318,6 +448,35 @@ function copySummary() {
     if (b) { const o = b.textContent; b.textContent = "Copied ✓"; setTimeout(() => b.textContent = o, 1400); }
   });
 }
+
+/* ---------- header clock ---------- */
+function pad2(n) { return String(n).padStart(2, "0"); }
+function tickClock() {
+  const d = new Date();
+  const u = $("ckUTC"), l = $("ckLOCAL"), lz = $("ckLZ");
+  if (u) u.textContent = pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes()) + ":" + pad2(d.getUTCSeconds()) + "Z";
+  if (l) l.textContent = pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
+  if (lz && !lz.dataset.set) {
+    try {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "LOCAL";
+      lz.textContent = tz.split("/").pop().replace("_", " ").slice(0, 10).toUpperCase();
+      lz.dataset.set = "1";
+    } catch (e) {}
+  }
+}
+(function initClock() {
+  const c = $("clock");
+  if (c) c.onclick = function () {
+    const iso = new Date().toISOString();
+    navigator.clipboard.writeText(iso).then(function () {
+      const z = $("ckUTC"), o = z.textContent;
+      z.textContent = "copied ✓";
+      setTimeout(function () { z.textContent = o; }, 1000);
+    });
+  };
+  tickClock();
+  setInterval(tickClock, 1000);
+})();
 </script>
 
 </body>
