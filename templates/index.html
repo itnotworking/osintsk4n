@@ -193,6 +193,9 @@ function cards(d) {
     (dmarc && dmarc.rua ? kvrow("DMARC rua", dmarc.rua) : "")
   ));
 
+  // Email reputation (only for email queries)
+  if (d.kind === "email") out.push(card("Email Reputation", emailRepBlock(d.emailrep)));
+
   // Domain reputation / age
   const ev = d.rdap_events || {};
   out.push(card("Domain Intelligence",
@@ -224,6 +227,11 @@ function cards(d) {
 
   // AbuseIPDB
   out.push(card("AbuseIPDB (IP)", abuseBlock(d.abuse)));
+
+  // Threat intel — actor/campaign correlation + known-bad feeds
+  out.push(card("Threat Intel (OTX)", otxBlock(d.otx)));
+  out.push(card("Threat Feeds", threatFeedsBlock(d)));
+  out.push(card("IP Reputation", ipRepBlock(d)));
 
   // DNS
   out.push(card("DNS Records",
@@ -270,6 +278,69 @@ function abuseBlock(a) {
          kvrow("Usage type", a.usageType || "?") +
          kvrow("Domain", a.domain || "—");
 }
+function otxBlock(o) {
+  if (!o) return '<pre class="muted">No OTX data (set OTX_API_KEY)</pre>';
+  if (!o.pulse_count) return kvrow("Threat reports", "0", "good") + '<div class="muted" style="font-size:11px;margin-top:6px">No community threat reports reference this indicator.</div>';
+  return kvrow("Threat reports", o.pulse_count, "bad") +
+    (o.malware_families && o.malware_families.length ? kvrow("Malware", o.malware_families.join(", "), "bad") : "") +
+    (o.adversaries && o.adversaries.length ? kvrow("Actors", o.adversaries.join(", "), "bad") : "") +
+    (o.tags && o.tags.length ? kvrow("Tags", o.tags.join(", ")) : "") +
+    (o.pulses && o.pulses.length ? kvrow("Reports", o.pulses.join(" · ")) : "");
+}
+
+function threatFeedsBlock(d) {
+  const gsb = d.gsb, tf = d.threatfox, uh = d.urlhaus;
+  let html = "";
+  // Google Safe Browsing
+  if (!gsb) html += kvrow("Safe Browsing", "set GSB_API_KEY", "");
+  else if (gsb.flagged) html += kvrow("Safe Browsing", (gsb.threats || []).join(", ") || "FLAGGED", "bad");
+  else html += kvrow("Safe Browsing", "clean", "good");
+  // ThreatFox
+  if (!tf) html += kvrow("ThreatFox", "set ABUSECH_API_KEY", "");
+  else if (tf.found) html += kvrow("ThreatFox", "KNOWN IOC" + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), "bad");
+  else html += kvrow("ThreatFox", "no match", "good");
+  // URLhaus
+  if (!uh) html += kvrow("URLhaus", "set ABUSECH_API_KEY", "");
+  else if (uh.found) html += kvrow("URLhaus", "MALWARE HOST · " + (uh.url_count || 0) + " URLs", "bad");
+  else html += kvrow("URLhaus", "no match", "good");
+  return html;
+}
+
+function ipRepBlock(d) {
+  if (!d.ip) return '<pre class="muted">No resolved IP</pre>';
+  const gn = d.greynoise, s = d.shodan;
+  let html = "";
+  if (gn && gn.observed) {
+    const cls = gn.classification || "unknown";
+    html += kvrow("GreyNoise", cls + (gn.name ? " · " + gn.name : ""), cls === "malicious" ? "bad" : (cls === "benign" ? "good" : "warn"));
+    if (gn.last_seen) html += kvrow("Last seen", gn.last_seen);
+  } else {
+    html += kvrow("GreyNoise", gn ? "not observed scanning" : "—");
+  }
+  if (s) {
+    html += kvrow("Open ports", (s.ports && s.ports.length) ? s.ports.join(", ") : "none seen");
+    if (s.vulns && s.vulns.length) html += kvrow("CVEs", s.vulns.slice(0, 8).join(", "), "warn");
+    if (s.tags && s.tags.length) html += kvrow("Shodan tags", s.tags.join(", "));
+  } else {
+    html += kvrow("Shodan", "no exposure data");
+  }
+  return html;
+}
+
+function emailRepBlock(e) {
+  if (!e) return '<pre class="muted">No EmailRep data (set EMAILREP_API_KEY, or address not found)</pre>';
+  const rep = (e.reputation || "none");
+  const repCls = rep === "high" ? "good" : (rep === "low" ? "bad" : "warn");
+  return kvrow("Reputation", rep, repCls) +
+    kvrow("Suspicious", e.suspicious ? "YES" : "no", e.suspicious ? "bad" : "good") +
+    kvrow("Malicious activity", e.malicious_activity ? "YES" : "no", e.malicious_activity ? "bad" : "good") +
+    kvrow("In breaches", (e.data_breach || e.credentials_leaked) ? "YES" : "no", (e.data_breach || e.credentials_leaked) ? "warn" : "good") +
+    kvrow("Spam", e.spam ? "YES" : "no", e.spam ? "warn" : "") +
+    (e.references != null ? kvrow("References", e.references) : "") +
+    ((e.profiles && e.profiles.length) ? kvrow("Profiles", e.profiles.join(", ")) : "") +
+    (e.first_seen ? kvrow("First seen", e.first_seen) : "");
+}
+
 function liveBtn(label) {
   return '<button class="livebtn" id="liveScanBtn" onclick="runLiveScan()">' + label + '</button>';
 }
@@ -452,6 +523,11 @@ function fmtSecurity(d) {
 
 function stakeholderPoints(d) {
   const pts = [];
+  // Known-bad / actor correlation first — strongest signals.
+  if ((d.gsb && d.gsb.flagged) || (d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found))
+    pts.push("It appears in recognized threat databases as known-malicious infrastructure.");
+  if (d.otx && d.otx.pulse_count > 0 && ((d.otx.malware_families || []).length || (d.otx.adversaries || []).length))
+    pts.push("It is linked to reported threat activity (associated malware or threat actors).");
   if (d.age_days != null) {
     if (d.age_days < 90) pts.push("The domain was registered very recently (" + d.age_days + (d.age_days === 1 ? " day" : " days") + " ago) — a common trait of fraudulent or throwaway sites.");
     else pts.push("The domain has been established for " + Math.floor(d.age_days / 365) + "+ years, consistent with a legitimate organization.");

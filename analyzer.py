@@ -20,9 +20,13 @@ import requests
 VT_API_KEY = os.environ.get("VT_API_KEY", "")
 ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
 URLSCAN_API_KEY = os.environ.get("URLSCAN_API_KEY", "")
+OTX_API_KEY = os.environ.get("OTX_API_KEY", "")
+ABUSECH_API_KEY = os.environ.get("ABUSECH_API_KEY", "")
+GSB_API_KEY = os.environ.get("GSB_API_KEY", "")
+EMAILREP_API_KEY = os.environ.get("EMAILREP_API_KEY", "")
 
 USER_AGENT = "osintsk4n/2.0 (SOC triage)"
-_executor = ThreadPoolExecutor(max_workers=10)
+_executor = ThreadPoolExecutor(max_workers=16)
 
 # --------------------------------------------------------------------------
 # Reference data
@@ -460,6 +464,193 @@ def scan_url_for(raw_input):
     return f"https://{parsed['domain']}", parsed["registrable"]
 
 
+# --------------------------------------------------------------------------
+# Threat-intel enrichment (history + actor correlation)
+# --------------------------------------------------------------------------
+
+def otx_lookup(domain):
+    """AlienVault OTX — community 'pulses' tying an indicator to campaigns/actors/malware."""
+    if not domain:
+        return None
+    headers = {"User-Agent": USER_AGENT}
+    if OTX_API_KEY:
+        headers["X-OTX-API-KEY"] = OTX_API_KEY
+    data = safe_get(
+        f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/general",
+        headers=headers, timeout=10,
+    )
+    if not data:
+        return None
+    pi = data.get("pulse_info") or {}
+    pulses = pi.get("pulses") or []
+    families, adversaries, tags, names = set(), set(), set(), []
+    for p in pulses[:25]:
+        if p.get("name"):
+            names.append(p["name"])
+        for mf in (p.get("malware_families") or []):
+            nm = (mf.get("display_name") or mf.get("id")) if isinstance(mf, dict) else mf
+            if nm:
+                families.add(nm)
+        if p.get("adversary"):
+            adversaries.add(p["adversary"])
+        for t in (p.get("tags") or []):
+            tags.add(t)
+    return {
+        "pulse_count": pi.get("count", len(pulses)),
+        "pulses": names[:6],
+        "malware_families": sorted(families)[:8],
+        "adversaries": sorted(adversaries)[:6],
+        "tags": sorted(tags)[:10],
+    }
+
+
+def threatfox_lookup(ioc):
+    """abuse.ch ThreatFox — is this a known malware/C2 IOC?"""
+    if not ioc:
+        return None
+    headers = {"User-Agent": USER_AGENT}
+    if ABUSECH_API_KEY:
+        headers["Auth-Key"] = ABUSECH_API_KEY
+    try:
+        r = requests.post("https://threatfox-api.abuse.ch/api/v1/",
+                          json={"query": "search_ioc", "search_term": ioc},
+                          headers=headers, timeout=10)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+    except Exception:
+        return None
+    if d.get("query_status") != "ok" or not d.get("data"):
+        return {"found": False}
+    rows = d["data"]
+    fams, tags, first = set(), set(), None
+    for row in rows[:10]:
+        if row.get("malware_printable"):
+            fams.add(row["malware_printable"])
+        for t in (row.get("tags") or []):
+            tags.add(t)
+        if row.get("first_seen") and not first:
+            first = row["first_seen"]
+    return {"found": True, "count": len(rows), "malware": sorted(fams)[:6],
+            "tags": sorted(tags)[:8], "first_seen": first,
+            "confidence": rows[0].get("confidence_level")}
+
+
+def urlhaus_host(host):
+    """abuse.ch URLhaus — known malware-distribution host lookup."""
+    if not host:
+        return None
+    headers = {"User-Agent": USER_AGENT}
+    if ABUSECH_API_KEY:
+        headers["Auth-Key"] = ABUSECH_API_KEY
+    try:
+        r = requests.post("https://urlhaus-api.abuse.ch/v1/host/",
+                          data={"host": host}, headers=headers, timeout=10)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+    except Exception:
+        return None
+    qs = d.get("query_status")
+    if qs == "no_results":
+        return {"found": False}
+    if qs != "ok":
+        return None
+    urls = d.get("urls") or []
+    return {"found": True, "url_count": d.get("url_count") or len(urls),
+            "threats": sorted({u.get("threat") for u in urls if u.get("threat")}),
+            "urls": [u.get("url") for u in urls[:5] if u.get("url")]}
+
+
+def shodan_internetdb(ip):
+    """Shodan InternetDB (free, no key) — open ports, CVEs, tags for an IP."""
+    if not ip:
+        return None
+    data = safe_get(f"https://internetdb.shodan.io/{ip}", timeout=8)
+    if not data:
+        return None
+    return {"ports": data.get("ports") or [], "vulns": data.get("vulns") or [],
+            "tags": data.get("tags") or [], "hostnames": data.get("hostnames") or [],
+            "cpes": data.get("cpes") or []}
+
+
+def greynoise_lookup(ip):
+    """GreyNoise Community (free) — benign scanner vs malicious noise classification.
+    Note: returns HTTP 404 (with a useful JSON body) when an IP hasn't been observed."""
+    if not ip:
+        return None
+    try:
+        r = requests.get(f"https://api.greynoise.io/v3/community/{ip}",
+                         headers={"User-Agent": USER_AGENT, "Accept": "application/json"}, timeout=8)
+        if r.status_code not in (200, 404):
+            return None
+        data = r.json()
+    except Exception:
+        return None
+    if not data:
+        return None
+    if data.get("classification"):
+        return {"observed": True, "noise": data.get("noise"), "riot": data.get("riot"),
+                "classification": data.get("classification"), "name": data.get("name"),
+                "last_seen": data.get("last_seen")}
+    return {"observed": False, "message": data.get("message")}
+
+
+def safebrowsing(url):
+    """Google Safe Browsing — authoritative malware/phishing verdict for a URL."""
+    if not GSB_API_KEY or not url:
+        return None
+    body = {
+        "client": {"clientId": "sc4n", "clientVersion": "2.0"},
+        "threatInfo": {
+            "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE",
+                            "POTENTIALLY_HARMFUL_APPLICATION"],
+            "platformTypes": ["ANY_PLATFORM"],
+            "threatEntryTypes": ["URL"],
+            "threatEntries": [{"url": url}],
+        },
+    }
+    try:
+        r = requests.post(
+            f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={GSB_API_KEY}",
+            json=body, headers={"User-Agent": USER_AGENT}, timeout=10)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+    except Exception:
+        return None
+    matches = d.get("matches") or []
+    if not matches:
+        return {"flagged": False}
+    return {"flagged": True, "threats": sorted({m.get("threatType") for m in matches if m.get("threatType")})}
+
+
+def emailrep_lookup(email):
+    """EmailRep.io — reputation of an email address (suspicious/malicious, breaches, profiles)."""
+    if not email:
+        return None
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    if EMAILREP_API_KEY:
+        headers["Key"] = EMAILREP_API_KEY
+    data = safe_get(f"https://emailrep.io/{email}", headers=headers, timeout=10)
+    if not data or "reputation" not in data:
+        return None
+    det = data.get("details") or {}
+    return {
+        "reputation": data.get("reputation"),
+        "suspicious": data.get("suspicious"),
+        "references": data.get("references"),
+        "blacklisted": det.get("blacklisted"),
+        "malicious_activity": det.get("malicious_activity"),
+        "credentials_leaked": det.get("credentials_leaked"),
+        "data_breach": det.get("data_breach"),
+        "spam": det.get("spam"),
+        "first_seen": det.get("first_seen"),
+        "last_seen": det.get("last_seen"),
+        "profiles": det.get("profiles") or [],
+    }
+
+
 def crtsh(domain):
     """Subdomain / certificate enumeration via crt.sh (free, no key)."""
     try:
@@ -730,6 +921,50 @@ def score(result):
         elif uv.get("score", 0) > 0:
             pts += 12; reasons.append(f"urlscan risk score {uv['score']}")
 
+    gsb = result.get("gsb")
+    if gsb and gsb.get("flagged"):
+        pts += 40
+        reasons.append("Google Safe Browsing: " + ", ".join(gsb.get("threats") or ["flagged"]))
+        bec.append("Google Safe Browsing hit")
+
+    tf = result.get("threatfox")
+    if tf and tf.get("found"):
+        pts += 35
+        fam = ", ".join(tf.get("malware") or [])
+        reasons.append("ThreatFox: known malicious IOC" + (f" ({fam})" if fam else ""))
+        bec.append("ThreatFox known IOC")
+
+    uh = result.get("urlhaus")
+    if uh and uh.get("found"):
+        pts += 35
+        reasons.append(f"URLhaus: known malware host ({uh.get('url_count', '?')} URLs)")
+        bec.append("URLhaus malware host")
+
+    otx = result.get("otx")
+    if otx and otx.get("pulse_count", 0) > 0:
+        named = (otx.get("malware_families") or []) + (otx.get("adversaries") or [])
+        if named:
+            pts += 20
+            reasons.append(f"AlienVault OTX: {otx['pulse_count']} reports ({', '.join(named[:3])})")
+            bec.append("OTX threat reports")
+        else:
+            pts += 10
+            reasons.append(f"AlienVault OTX: {otx['pulse_count']} community threat reports")
+
+    gn = result.get("greynoise")
+    if gn and gn.get("observed") and gn.get("classification") == "malicious":
+        pts += 15
+        reasons.append("GreyNoise: source IP classified malicious")
+
+    er = result.get("emailrep")
+    if er:
+        if er.get("malicious_activity"):
+            pts += 25; reasons.append("EmailRep: known malicious activity"); bec.append("EmailRep malicious activity")
+        elif er.get("suspicious"):
+            pts += 14; reasons.append("EmailRep: flagged suspicious")
+        if er.get("credentials_leaked") or er.get("data_breach"):
+            reasons.append("EmailRep: address appears in breaches/credential leaks")
+
     info = result.get("info")
     if info and info.get("status") == "success":
         if info.get("proxy"):
@@ -779,6 +1014,13 @@ def analyze(raw_input):
         "urlscan": _executor.submit(urlscan_search, domain),
         "crtsh": _executor.submit(crtsh, parsed["registrable"]),
         "dkim":  _executor.submit(check_dkim, domain),
+        "otx":   _executor.submit(otx_lookup, parsed["registrable"]),
+        "threatfox": _executor.submit(threatfox_lookup, domain),
+        "urlhaus": _executor.submit(urlhaus_host, domain),
+        "shodan": _executor.submit(shodan_internetdb, ip),
+        "greynoise": _executor.submit(greynoise_lookup, ip),
+        "gsb":   _executor.submit(safebrowsing, parsed["url"] or f"https://{domain}"),
+        "emailrep": _executor.submit(emailrep_lookup, parsed["email"]),
     }
     res = {k: f.result() for k, f in futures.items()}
 
@@ -820,6 +1062,10 @@ def analyze(raw_input):
         "info": res["info"], "abuse": res["abuse"],
         "urlscan": res["urlscan"], "crtsh": res["crtsh"],
         "dkim": res["dkim"],
+        "otx": res["otx"], "threatfox": res["threatfox"],
+        "urlhaus": res["urlhaus"], "shodan": res["shodan"],
+        "greynoise": res["greynoise"], "gsb": res["gsb"],
+        "emailrep": res["emailrep"],
         # derived
         "age_days": age_days, "registered": reg_date,
         "spf_parsed": spf, "dmarc_parsed": dmarc,

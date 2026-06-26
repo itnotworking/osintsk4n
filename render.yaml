@@ -12,3 +12,11 @@ services:
         sync: false
       - key: URLSCAN_API_KEY
         sync: false
+      - key: OTX_API_KEY
+        sync: false
+      - key: ABUSECH_API_KEY
+        sync: false
+      - key: GSB_API_KEY
+        sync: false
+      - key: EMAILREP_API_KEY
+        sync: false
