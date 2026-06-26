@@ -344,9 +344,13 @@ def urlscan_search(domain):
         return None
     results = []
     for r in data["results"][:5]:
+        page = r.get("page", {}) or {}
+        task = r.get("task", {}) or {}
         results.append({
-            "url": (r.get("page", {}) or {}).get("url"),
-            "time": r.get("task", {}).get("time"),
+            "url": page.get("url"),
+            "domain": page.get("domain"),
+            "submitted": task.get("url"),
+            "time": task.get("time"),
             "screenshot": r.get("screenshot"),
             "result": r.get("result"),
             "uuid": r.get("_id"),
@@ -367,10 +371,22 @@ def urlscan_search(domain):
                 "brands": [b.get("name") for b in overall.get("brands", []) if b.get("name")],
                 "categories": overall.get("categories", []),
             }
+
+    # Where did the most recent scan actually land? (off-domain redirect = red flag)
+    top = results[0]
+    final_domain = top.get("domain")
+    if not final_domain and top.get("url"):
+        try:
+            final_domain = urlparse(top["url"]).hostname
+        except Exception:
+            final_domain = None
+
     return {
         "count": data.get("total", len(results)),
         "results": results,
         "verdict": verdict,
+        "final_url": top.get("url"),
+        "final_domain": final_domain,
     }
 
 
@@ -628,6 +644,11 @@ def score(result):
         pts += 4; reasons.append("Free consumer mail provider")
 
     us = result.get("urlscan")
+    if us and us.get("redirect", {}).get("offsite"):
+        pts += 28
+        to_reg = us["redirect"]["to_reg"]
+        reasons.append(f"Redirects off-domain to {to_reg} (not {result.get('registrable')})")
+        bec.append(f"Off-domain redirect → {to_reg}")
     if us and us.get("verdict"):
         uv = us["verdict"]
         if uv.get("malicious"):
@@ -696,6 +717,18 @@ def analyze(raw_input):
     dmarc = parse_dmarc(res["dmarc"])
     look = lookalike_check(parsed["registrable"])
     reg_dom = parsed["registrable"]
+
+    # Off-domain redirect detection: did the scanned page land on an unrelated domain?
+    us = res["urlscan"]
+    if us and us.get("final_domain"):
+        final_reg = registrable_domain(us["final_domain"])
+        if final_reg and final_reg != reg_dom:
+            us["redirect"] = {
+                "offsite": True,
+                "to_host": us["final_domain"],
+                "to_reg": final_reg,
+                "final_url": us.get("final_url"),
+            }
 
     result = {
         "ok": True,

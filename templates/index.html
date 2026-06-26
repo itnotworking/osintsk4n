@@ -34,12 +34,35 @@
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+let loaderTimer = null;
+const LOADER_STEPS = [
+  "Resolving DNS records",
+  "Querying VirusTotal",
+  "Checking IP reputation",
+  "Fetching WHOIS / RDAP",
+  "Probing SPF · DKIM · DMARC",
+  "Scanning urlscan + certificates",
+  "Scoring risk signals",
+];
+function startLoader(target) {
+  let i = 0;
+  $("status").innerHTML =
+    '<div class="loader fade-in"><div class="loader-bar"><i></i></div>' +
+    '<div class="loader-step" id="loaderStep"><b>' + esc(target) + '</b> — ' + LOADER_STEPS[0] + '…</div></div>';
+  loaderTimer = setInterval(function () {
+    i = (i + 1) % LOADER_STEPS.length;
+    const s = $("loaderStep");
+    if (s) s.innerHTML = '<b>' + esc(target) + '</b> — ' + LOADER_STEPS[i] + '…';
+  }, 850);
+}
+function stopLoader() { if (loaderTimer) { clearInterval(loaderTimer); loaderTimer = null; } }
+
 async function analyze() {
   const target = $("target").value.trim();
   if (!target) return;
   const btn = $("analyzeBtn");
   btn.disabled = true;
-  $("status").innerHTML = '<span class="dot"></span><span class="scanning">Triaging ' + esc(target) + '</span>';
+  startLoader(target);
   $("output").innerHTML = "";
 
   const form = new FormData();
@@ -48,6 +71,7 @@ async function analyze() {
   try {
     const res = await fetch("/analyze", { method: "POST", body: form });
     const data = await res.json();
+    stopLoader();
     if (!data.ok) {
       $("output").innerHTML = '<div class="err">✗ ' + esc(data.error || "Analysis failed") + '</div>';
       $("status").innerHTML = "";
@@ -56,9 +80,11 @@ async function analyze() {
     render(data);
     $("status").innerHTML = '✓ Triage complete · ' + esc(data.kind) + ' · ' + esc(data.domain);
   } catch (e) {
+    stopLoader();
     $("output").innerHTML = '<div class="err">✗ Network error</div>';
     $("status").innerHTML = "";
   } finally {
+    stopLoader();
     btn.disabled = false;
   }
 }
@@ -168,7 +194,7 @@ function cards(d) {
 }
 
 function card(title, body) {
-  return '<div class="card fade-in"><h3>' + esc(title) + '</h3><div class="kv-wrap">' + body + '</div></div>';
+  return '<div class="card fade-in"><h3><span class="ttl">' + esc(title) + '</span></h3><div class="kv-wrap">' + body + '</div></div>';
 }
 function kvrow(k, v, cls) {
   return '<div class="kv"><div class="k">' + esc(k) + '</div><div class="v ' + (cls||"") + '">' + esc(v) + '</div></div>';
@@ -204,6 +230,11 @@ function urlscanBlock(u) {
     html += kvrow("Score", v.score);
     if (v.brands && v.brands.length) html += kvrow("Impersonates", v.brands.join(", "), "bad");
     if (v.categories && v.categories.length) html += kvrow("Categories", v.categories.join(", "));
+  }
+  if (u.redirect && u.redirect.offsite) {
+    html += kvrow("⚠ Redirect", "Lands on " + u.redirect.to_reg + " — off-domain", "bad");
+  } else if (u.final_domain) {
+    html += kvrow("Lands on", u.final_domain, "good");
   }
   html += kvrow("Recent scans", u.count || u.results.length);
   const top = u.results[0];
