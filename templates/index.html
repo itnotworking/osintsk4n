@@ -279,11 +279,21 @@ function urlscanSection(d) {
     '<div id="urlscanBody">' + urlscanBlock(d.urlscan) + '</div></div>';
 }
 
+// Prominent warning banner for an off-domain (likely malicious) redirect.
+function redirectAlert(toReg) {
+  return '<div class="redirect-alert fade-in"><div class="ra-icon">⚠</div><div class="ra-body">' +
+    '<div class="ra-title">Likely malicious redirect</div>' +
+    '<div class="ra-text">This domain forwards visitors to <b>' + esc(toReg) + '</b> — an unrelated site. ' +
+    'Silent off-domain redirects are a common phishing and parked-domain tactic. ' +
+    'Do not trust links to this domain without further investigation.</div>' +
+    '</div></div>';
+}
+
 // Two-column layout: details on the left, larger screenshot on the right.
-function usGrid(info, shotHtml) {
+function usGrid(info, shotHtml, danger) {
   if (!shotHtml) return info;
   return '<div class="us-grid"><div class="us-info">' + info + '</div>' +
-         '<div class="us-shot">' + shotHtml + '</div></div>';
+         '<div class="us-shot' + (danger ? ' danger' : '') + '">' + shotHtml + '</div></div>';
 }
 
 // Render from the /analyze urlscan payload (has results[]) OR a live-scan result (single).
@@ -300,8 +310,9 @@ function urlscanBlock(u) {
     esc(r.url || "") + '</a><div class="muted" style="font-size:11px">' +
     esc((r.time || "").slice(0, 10)) + '</div></div>').join("");
   info += '<div style="margin-top:20px">' + liveBtn('▶ Re-scan live') + '</div>';
+  const danger = !!(u.redirect && u.redirect.offsite);
   const shotHtml = (top && top.screenshot) ? shot(top.screenshot, top.result, top.url) : "";
-  return usGrid(info, shotHtml);
+  return (danger ? redirectAlert(u.redirect.to_reg) : "") + usGrid(info, shotHtml, danger);
 }
 
 // Shared verdict/redirect rows (used by both stored + live results).
@@ -359,12 +370,11 @@ function renderLiveResult(res) {
   info += urlscanVerdictRows(res);
   if (res.final_url) info += '<div class="scanrow"><a href="' + esc(res.result) + '" target="_blank" rel="noopener">' + esc(res.final_url) + '</a></div>';
   info += '<div style="margin-top:20px">' + liveBtn('▶ Re-scan live') + '</div>';
+  const danger = !!(res.redirect && res.redirect.offsite);
   const shotHtml = res.screenshot ? shot(res.screenshot, res.result, res.final_url) : "";
-  let html = usGrid(info, shotHtml);
+  let html = usGrid(info, shotHtml, danger);
   // If the live scan revealed an off-domain redirect, call it out loudly.
-  if (res.redirect && res.redirect.offsite) {
-    html = '<div class="live-alert">⚠ Live scan: this domain redirects off-site to <b>' + esc(res.redirect.to_reg) + '</b></div>' + html;
-  }
+  if (danger) html = redirectAlert(res.redirect.to_reg) + html;
   body.innerHTML = html;
 }
 function crtBlock(c) {

@@ -235,6 +235,28 @@ a:hover { color: #b9c0f0; text-decoration: underline; }
   border-left: 2px solid var(--crit); background: rgba(233,106,106,.08); border-radius: 0 4px 4px 0;
 }
 .live-alert b { color: #f0adad; }
+
+/* prominent malicious-redirect warning */
+.redirect-alert {
+  display: flex; gap: 16px; align-items: flex-start;
+  background: rgba(233,106,106,0.10);
+  border: 1px solid rgba(233,106,106,0.40);
+  border-left: 4px solid var(--crit);
+  border-radius: 10px; padding: 16px 20px; margin-bottom: 26px;
+}
+.redirect-alert .ra-icon {
+  font-size: 24px; line-height: 1.1; color: var(--crit); flex: 0 0 auto;
+  animation: raPulse 1.5s ease-in-out infinite;
+}
+@keyframes raPulse { 0%,100% { opacity:.55; transform: scale(1); } 50% { opacity:1; transform: scale(1.15); } }
+.redirect-alert .ra-title {
+  font-size: 13px; font-weight: 700; color: #f3b0b0; letter-spacing: .6px;
+  text-transform: uppercase; margin-bottom: 5px;
+}
+.redirect-alert .ra-text { font-size: 13.5px; color: var(--text); line-height: 1.65; }
+.redirect-alert .ra-text b { color: #f3b0b0; }
+.us-shot.danger img { border-color: var(--crit); box-shadow: 0 0 0 1px rgba(233,106,106,0.35); }
+.us-shot.danger .us-cap { color: #e89595; }
 .muted { color: var(--muted); }
 .hidden { display: none; }
 .fade-in { animation: fadeIn .25s ease forwards; }
