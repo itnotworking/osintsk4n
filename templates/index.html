@@ -12,9 +12,8 @@
 <header>
   <h1 class="brand">
     <img src="/static/favicon.svg" alt="" class="logo" width="26" height="26">
-    SC<span>4N</span>
+    <span class="name">SC<span>4N</span></span>
   </h1>
-  <p>Domain · URL · Email — spam / malware / BEC triage</p>
 </header>
 
 <div class="wrap">
@@ -162,9 +161,6 @@ function cards(d) {
     '<pre id="ticket">' + esc(d.ticket_summary) + '</pre></div>'
   );
 
-  // external lookups (full width)
-  out.push('<div class="card span2 fade-in links"><h3>External Pivots</h3>' + linksBlock(d) + '</div>');
-
   return '<div class="grid">' + out.join("") + '</div>';
 }
 
@@ -224,25 +220,6 @@ function crtBlock(c) {
   return '<div class="kv"><div class="k">Total</div><div class="v">' + c.count + '</div></div>' +
     '<div class="subs" style="margin-top:8px">' + c.subdomains.map(s => '<div>' + esc(s) + '</div>').join("") + '</div>';
 }
-function linksBlock(d) {
-  const dom = encodeURIComponent(d.domain);
-  const ip = encodeURIComponent(d.ip || "");
-  const links = [
-    ["VirusTotal", "https://www.virustotal.com/gui/domain/" + dom],
-    ["urlscan", "https://urlscan.io/domain/" + dom],
-    ["MXToolbox", "https://mxtoolbox.com/SuperTool.aspx?action=mx%3a" + dom],
-    ["Talos", "https://talosintelligence.com/reputation_center/lookup?search=" + dom],
-    ["AbuseIPDB", "https://www.abuseipdb.com/check/" + ip],
-    ["Censys", "https://search.censys.io/search?q=" + dom],
-    ["Shodan", "https://www.shodan.io/search?query=" + dom],
-    ["crt.sh", "https://crt.sh/?q=" + dom],
-    ["Google Safe Browsing", "https://transparencyreport.google.com/safe-browsing/search?url=" + dom],
-    ["WHOIS", "https://who.is/whois/" + dom],
-  ];
-  if (d.email) links.unshift(["EmailRep", "https://emailrep.io/" + encodeURIComponent(d.email)]);
-  return links.map(l => '<a href="' + esc(l[1]) + '" target="_blank" rel="noopener">' + esc(l[0]) + '</a>').join("");
-}
-
 function copySummary() {
   const t = $("ticket");
   if (t) navigator.clipboard.writeText(t.textContent).then(() => {
