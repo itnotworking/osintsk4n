@@ -16,8 +16,11 @@
   </h1>
   <div class="hdr-rail">
     <div class="clock" id="clock" title="Click to copy ISO 8601 UTC timestamp (for ticket/log notes)">
-      <div class="ck utc"><span class="z">UTC</span><span class="t" id="ckUTC">--:--:--</span></div>
-      <div class="ck local"><span class="z" id="ckLZ">LOCAL</span><span class="t" id="ckLOCAL">--:--:--</span></div>
+      <div class="ck"><span class="z">PT</span><span class="t" id="z-pt">--:--:--</span></div>
+      <div class="ck"><span class="z">MT</span><span class="t" id="z-mt">--:--:--</span></div>
+      <div class="ck"><span class="z">CT</span><span class="t" id="z-ct">--:--:--</span></div>
+      <div class="ck"><span class="z">ET</span><span class="t" id="z-et">--:--:--</span></div>
+      <div class="ck utc"><span class="z">UTC</span><span class="t" id="z-utc">--:--:--</span></div>
     </div>
   </div>
 </header>
@@ -99,6 +102,22 @@ let current = null;
 function render(d) {
   current = d;
   $("output").innerHTML = verdictBanner(d) + cards(d);
+  lockTicketHeight();
+}
+
+// Pin the ticket box to its tallest format so tab switching never reflows the page.
+function lockTicketHeight() {
+  const t = $("ticket");
+  if (!t) return;
+  const cur = t.textContent;
+  t.style.minHeight = "";
+  let max = 0;
+  ["analyst", "servicenow", "stakeholder"].forEach(function (f) {
+    t.textContent = ticketFmts[f] || "";
+    if (t.offsetHeight > max) max = t.offsetHeight;
+  });
+  t.textContent = cur;
+  t.style.minHeight = max + "px";
 }
 
 function verdictClass(v) {
@@ -121,9 +140,24 @@ function verdictBanner(d) {
         (tags ? '<div class="tags">' + tags + '</div>' : '') +
       '</div>' +
     '</div>' +
+    '<div class="brief fade-in"><h3>Summary</h3><p>' + esc(buildBrief(d)) + '</p></div>' +
     (d.reasons && d.reasons.length ?
       '<div class="signals fade-in"><h3>Signals</h3><ul>' +
       d.reasons.map(r => "<li>" + esc(r) + "</li>").join("") + '</ul></div>' : '');
+}
+
+// One/two-sentence plain-English verdict explanation.
+function buildBrief(d) {
+  const plain = ({
+    "Likely Malicious": "likely malicious", "Suspicious": "suspicious",
+    "Low–Moderate": "low-to-moderate risk", "Likely Legitimate": "likely legitimate"
+  })[d.verdict] || d.verdict.toLowerCase();
+  const kind = d.kind === "email" ? "email domain" : (d.kind === "url" ? "URL" : "domain");
+  let s = "This " + kind + " (" + d.defanged + ") is assessed as " + plain +
+    " with a risk score of " + d.score + "/100. ";
+  const pts = stakeholderPoints(d);
+  s += pts.slice(0, 2).join(" ");
+  return s;
 }
 
 function pill(label, on) {
@@ -402,7 +436,7 @@ function fmtServiceNow(d) {
 function stakeholderPoints(d) {
   const pts = [];
   if (d.age_days != null) {
-    if (d.age_days < 90) pts.push("The domain was registered very recently (" + d.age_days + " days ago) — a common trait of fraudulent or throwaway sites.");
+    if (d.age_days < 90) pts.push("The domain was registered very recently (" + d.age_days + (d.age_days === 1 ? " day" : " days") + " ago) — a common trait of fraudulent or throwaway sites.");
     else pts.push("The domain has been established for " + Math.floor(d.age_days / 365) + "+ years, consistent with a legitimate organization.");
   }
   const dmarcBad = !d.dmarc_parsed || (d.dmarc_parsed.policy || "none").toLowerCase() === "none";
@@ -449,28 +483,34 @@ function copySummary() {
   });
 }
 
-/* ---------- header clock ---------- */
-function pad2(n) { return String(n).padStart(2, "0"); }
+/* ---------- header clocks: US zones + UTC (DST-aware via Intl) ---------- */
+const CLOCK_ZONES = [
+  ["z-pt", "America/Los_Angeles"],
+  ["z-mt", "America/Denver"],
+  ["z-ct", "America/Chicago"],
+  ["z-et", "America/New_York"],
+  ["z-utc", "UTC"],
+];
+function zoneTime(tz) {
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    }).format(new Date());
+  } catch (e) { return "--:--:--"; }
+}
 function tickClock() {
-  const d = new Date();
-  const u = $("ckUTC"), l = $("ckLOCAL"), lz = $("ckLZ");
-  if (u) u.textContent = pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes()) + ":" + pad2(d.getUTCSeconds()) + "Z";
-  if (l) l.textContent = pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
-  if (lz && !lz.dataset.set) {
-    try {
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "LOCAL";
-      lz.textContent = tz.split("/").pop().replace("_", " ").slice(0, 10).toUpperCase();
-      lz.dataset.set = "1";
-    } catch (e) {}
-  }
+  CLOCK_ZONES.forEach(function (z) {
+    const el = $(z[0]);
+    if (el) el.textContent = zoneTime(z[1]) + (z[0] === "z-utc" ? "Z" : "");
+  });
 }
 (function initClock() {
   const c = $("clock");
   if (c) c.onclick = function () {
     const iso = new Date().toISOString();
     navigator.clipboard.writeText(iso).then(function () {
-      const z = $("ckUTC"), o = z.textContent;
-      z.textContent = "copied ✓";
+      const z = $("z-utc"), o = z.textContent;
+      z.textContent = "copied";
       setTimeout(function () { z.textContent = o; }, 1000);
     });
   };
