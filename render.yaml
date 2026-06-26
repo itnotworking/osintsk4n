@@ -10,3 +10,5 @@ services:
         sync: false
       - key: ABUSEIPDB_API_KEY
         sync: false
+      - key: URLSCAN_API_KEY
+        sync: false

@@ -333,7 +333,7 @@ def rdap_domain(domain):
 
 
 def urlscan_search(domain):
-    """Public urlscan search — works with or without an API key."""
+    """urlscan search + verdict for the most recent scan of this domain."""
     headers = {"API-Key": URLSCAN_API_KEY} if URLSCAN_API_KEY else None
     data = safe_get(
         "https://urlscan.io/api/v1/search/",
@@ -343,17 +343,35 @@ def urlscan_search(domain):
     if not data or not data.get("results"):
         return None
     results = []
-    malicious = False
     for r in data["results"][:5]:
-        verdict = r.get("verdicts", {}) if isinstance(r.get("verdicts"), dict) else {}
-        score = (r.get("page", {}) or {}).get("status")
         results.append({
             "url": (r.get("page", {}) or {}).get("url"),
             "time": r.get("task", {}).get("time"),
             "screenshot": r.get("screenshot"),
             "result": r.get("result"),
+            "uuid": r.get("_id"),
         })
-    return {"count": data.get("total", len(results)), "results": results}
+
+    # Pull the overall verdict for the most recent scan.
+    verdict = None
+    top_uuid = results[0].get("uuid") if results else None
+    if top_uuid:
+        detail = safe_get(
+            f"https://urlscan.io/api/v1/result/{top_uuid}/", headers=headers, timeout=10
+        )
+        if detail and isinstance(detail.get("verdicts"), dict):
+            overall = detail["verdicts"].get("overall", {})
+            verdict = {
+                "malicious": overall.get("malicious", False),
+                "score": overall.get("score", 0),
+                "brands": [b.get("name") for b in overall.get("brands", []) if b.get("name")],
+                "categories": overall.get("categories", []),
+            }
+    return {
+        "count": data.get("total", len(results)),
+        "results": results,
+        "verdict": verdict,
+    }
 
 
 def crtsh(domain):
@@ -608,6 +626,18 @@ def score(result):
         bec.append("Disposable email domain")
     elif result.get("freemail") and result.get("kind") == "email":
         pts += 4; reasons.append("Free consumer mail provider")
+
+    us = result.get("urlscan")
+    if us and us.get("verdict"):
+        uv = us["verdict"]
+        if uv.get("malicious"):
+            pts += 30
+            brands = ", ".join(uv.get("brands", [])) if uv.get("brands") else ""
+            reasons.append("urlscan: malicious verdict" + (f" (impersonates {brands})" if brands else ""))
+            if brands:
+                bec.append(f"urlscan brand impersonation: {brands}")
+        elif uv.get("score", 0) > 0:
+            pts += 12; reasons.append(f"urlscan risk score {uv['score']}")
 
     info = result.get("info")
     if info and info.get("status") == "success":

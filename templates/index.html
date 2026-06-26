@@ -198,9 +198,26 @@ function abuseBlock(a) {
 }
 function urlscanBlock(u) {
   if (!u || !u.results || !u.results.length) return '<pre class="muted">No recent urlscan submissions</pre>';
-  return '<div class="kv"><div class="k">Recent scans</div><div class="v">' + (u.count||u.results.length) + '</div></div>' +
-    u.results.map(r => '<div style="margin-top:6px"><a href="' + esc(r.result) + '" target="_blank" rel="noopener">' +
-      esc((r.url||"").slice(0,60)) + '</a><div class="muted" style="font-size:11px">' + esc((r.time||"").slice(0,10)) + '</div></div>').join("");
+  let html = "";
+  const v = u.verdict;
+  if (v) {
+    html += kvrow("Verdict", v.malicious ? "MALICIOUS" : "no detection", v.malicious ? "bad" : "good");
+    html += kvrow("Score", v.score);
+    if (v.brands && v.brands.length) html += kvrow("Impersonates", v.brands.join(", "), "bad");
+    if (v.categories && v.categories.length) html += kvrow("Categories", v.categories.join(", "));
+  }
+  html += kvrow("Recent scans", u.count || u.results.length);
+  const top = u.results[0];
+  if (top && top.screenshot) {
+    html += '<a href="' + esc(top.result) + '" target="_blank" rel="noopener">' +
+      '<img src="' + esc(top.screenshot) + '" alt="urlscan screenshot" ' +
+      'style="margin-top:8px;width:100%;border:1px solid var(--line);border-radius:4px" loading="lazy"></a>';
+  }
+  html += u.results.slice(0, 3).map(r =>
+    '<div style="margin-top:6px"><a href="' + esc(r.result) + '" target="_blank" rel="noopener">' +
+    esc((r.url || "").slice(0, 55)) + '</a><div class="muted" style="font-size:11px">' +
+    esc((r.time || "").slice(0, 10)) + '</div></div>').join("");
+  return html;
 }
 function crtBlock(c) {
   if (!c || !c.subdomains) return '<pre class="muted">No certificate data</pre>';
