@@ -71,7 +71,7 @@ function verdictClass(v) {
   return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious"})[v] || "low";
 }
 function ringColor(v) {
-  return ({"low":"#2ea043","lowmod":"#c69026","suspicious":"#c69026","malicious":"#ff4d4d"})[verdictClass(v)];
+  return ({"low":"#57b083","lowmod":"#d4a24a","suspicious":"#d4a24a","malicious":"#e96a6a"})[verdictClass(v)];
 }
 
 function verdictBanner(d) {
@@ -88,7 +88,8 @@ function verdictBanner(d) {
       '</div>' +
     '</div>' +
     (d.reasons && d.reasons.length ?
-      '<div class="card fade-in"><h3>Signals</h3><pre>' + d.reasons.map(r => "• " + esc(r)).join("\n") + '</pre></div>' : '');
+      '<div class="signals fade-in"><h3>Signals</h3><ul>' +
+      d.reasons.map(r => "<li>" + esc(r) + "</li>").join("") + '</ul></div>' : '');
 }
 
 function pill(label, on) {
@@ -149,21 +150,21 @@ function cards(d) {
     kvrow("MX", (d.mx||[]).join("  ") || "None") +
     kvrow("NS", (d.ns||[]).join("  ") || "None") +
     kvrow("SOA", (d.soa||[]).join("  ") || "None") +
-    kvrow("TXT", (d.txt||[]).map(esc).join("\n") || "None")
+    kvrow("TXT", (d.txt||[]).join("\n") || "None", (d.txt && d.txt.length ? "scroll-val" : ""))
   ));
 
-  // urlscan + crtsh combined
-  out.push(card("urlscan.io", urlscanBlock(d.urlscan)));
-  out.push(card("Subdomains (crt.sh)", crtBlock(d.crtsh)));
+  // urlscan + crtsh — only shown when they actually returned data
+  if (d.urlscan && d.urlscan.results && d.urlscan.results.length)
+    out.push(card("urlscan.io", urlscanBlock(d.urlscan)));
+  if (d.crtsh && d.crtsh.subdomains && d.crtsh.subdomains.length)
+    out.push(card("Subdomains (crt.sh)", crtBlock(d.crtsh)));
 
-  // ticket summary (full width)
-  out.push(
-    '<div class="card span2 fade-in"><h3>Ticket Summary' +
-    '<button class="copybtn" onclick="copySummary()">Copy</button></h3>' +
-    '<pre id="ticket">' + esc(d.ticket_summary) + '</pre></div>'
-  );
+  const ticket =
+    '<div class="ticket fade-in"><div class="ticket-h"><span>Ticket Summary</span>' +
+    '<button class="copybtn" onclick="copySummary()">Copy</button></div>' +
+    '<pre id="ticket">' + esc(d.ticket_summary) + '</pre></div>';
 
-  return '<div class="grid">' + out.join("") + '</div>';
+  return '<div class="grid">' + out.join("") + '</div>' + ticket;
 }
 
 function card(title, body) {
