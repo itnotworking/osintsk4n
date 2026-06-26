@@ -55,7 +55,9 @@ header h1 { margin: 0; font-size: 16px; letter-spacing: .3px; font-weight: 600; 
 @media (max-width: 980px) { .clock .ck:nth-child(1), .clock .ck:nth-child(2) { display: none; } }
 @media (max-width: 680px) { .clock .ck:nth-child(3) { display: none; } header { padding: 14px 18px; } .clock { gap: 12px; } }
 header h1.brand { display: flex; align-items: center; gap: 9px; }
-header h1 .logo { display: block; opacity: .9; }
+header h1 .logo { display: block; opacity: .9; transform-origin: 50% 50%; animation: logoSpin 5s linear infinite; }
+@keyframes logoSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { header h1 .logo { animation: none; } }
 header h1 .name { color: var(--text); }
 header h1 .name span { color: var(--accent); }
 
