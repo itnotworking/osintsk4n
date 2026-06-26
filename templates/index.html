@@ -127,7 +127,7 @@ function lockTicketHeight() {
   const cur = t.textContent;
   t.style.minHeight = "";
   let max = 0;
-  ["analyst", "servicenow", "stakeholder"].forEach(function (f) {
+  ["security", "executive", "enduser"].forEach(function (f) {
     t.textContent = ticketFmts[f] || "";
     if (t.offsetHeight > max) max = t.offsetHeight;
   });
@@ -385,25 +385,26 @@ function crtBlock(c) {
 /* ---------- ticket summary: three audiences ---------- */
 let ticketFmts = {};
 
+const TICKET_TABS = [
+  ["security", "Security Team"],
+  ["executive", "Executive"],
+  ["enduser", "End User"],
+];
 function buildTicket(d) {
   ticketFmts = {
-    analyst: d.ticket_summary || fmtAnalyst(d),
-    servicenow: fmtServiceNow(d),
-    stakeholder: fmtStakeholder(d),
+    security: fmtSecurity(d),
+    executive: fmtExecutive(d),
+    enduser: fmtEndUser(d),
   };
-  const tabs = [
-    ["analyst", "SOC Analyst"],
-    ["servicenow", "ServiceNow"],
-    ["stakeholder", "Stakeholder"],
-  ].map(function (t, i) {
+  const tabs = TICKET_TABS.map(function (t, i) {
     return '<button class="ttab' + (i === 0 ? ' active' : '') + '" data-fmt="' + t[0] +
       '" onclick="selectTicket(\'' + t[0] + '\')">' + t[1] + '</button>';
   }).join("");
   return '<div class="ticket fade-in"><div class="ticket-h">' +
-    '<span class="thd">Ticket Summary</span>' +
+    '<span class="thd">Report Summary</span>' +
     '<div class="ticket-tabs">' + tabs +
     '<button class="copybtn" onclick="copySummary()">Copy</button></div></div>' +
-    '<pre id="ticket" class="ticket-body">' + esc(ticketFmts.analyst) + '</pre></div>';
+    '<pre id="ticket" class="ticket-body">' + esc(ticketFmts.security) + '</pre></div>';
 }
 
 function selectTicket(fmt) {
@@ -429,43 +430,23 @@ function authLine(d) {
     ", DKIM " + (d.dkim && d.dkim.length ? "present" : "none found");
 }
 
-function fmtAnalyst(d) {
-  // fallback if server summary missing
+// Security Team — full technical report for analysts/SOC.
+function fmtSecurity(d) {
   const i = d.info || {};
   const L = [];
+  L.push("SECURITY TEAM — TRIAGE REPORT");
+  L.push("");
   L.push("IOC:      " + d.defanged + "  (" + d.kind + ")");
   L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
   if (d.ip) L.push("Hosting:  " + d.ip + "  [" + (i.country || "?") + " · " + (i.org || i.isp || "?") + "]");
   if (d.registered) L.push("Domain:   registered " + d.registered.slice(0, 10) + (d.age_days != null ? " (" + d.age_days + "d old)" : ""));
   if (d.mx_provider) L.push("Mail:     " + d.mx_provider);
   L.push("Auth:     " + authLine(d));
+  if (d.urlscan && d.urlscan.redirect && d.urlscan.redirect.offsite) L.push("Redirect: off-domain to " + d.urlscan.redirect.to_reg);
   if (d.bec && d.bec.length) L.push("BEC:      " + d.bec.join("; "));
   if (d.reasons && d.reasons.length) L.push("Signals:  " + d.reasons.join(" | "));
-  return L.join("\n");
-}
-
-function fmtServiceNow(d) {
-  const pri = ({
-    "Likely Malicious": "2 - High", "Suspicious": "3 - Moderate",
-    "Low–Moderate": "4 - Low", "Likely Legitimate": "5 - Planning"
-  })[d.verdict] || "4 - Low";
-  const i = d.info || {};
-  const L = [];
-  L.push("Short description: [SC4N] " + d.kind + " triage: " + d.domain + " — " + d.verdict + " (" + d.score + "/100)");
-  L.push("Category:          Security Incident — Email/Web Triage");
-  L.push("Priority:          " + pri);
-  L.push("Configuration item: " + d.domain);
   L.push("");
-  L.push("Work notes:");
-  L.push("- IOC: " + d.defanged + " (" + d.kind + ")");
-  L.push("- Verdict: " + d.verdict + " — risk " + d.score + "/100");
-  if (d.ip) L.push("- Hosting: " + d.ip + " (" + (i.country || "?") + ", " + (i.org || i.isp || "?") + ")");
-  if (d.registered) L.push("- Domain age: " + (d.age_days != null ? d.age_days + " days" : "?") + " (registered " + d.registered.slice(0, 10) + ")");
-  L.push("- Email auth: " + authLine(d));
-  if (d.urlscan && d.urlscan.redirect && d.urlscan.redirect.offsite) L.push("- Off-domain redirect: lands on " + d.urlscan.redirect.to_reg);
-  if (d.bec && d.bec.length) L.push("- BEC indicators: " + d.bec.join("; "));
-  if (d.reasons && d.reasons.length) L.push("- Signals: " + d.reasons.join("; "));
-  L.push("- Recommended action: " + recAction(d));
+  L.push("Recommended action: " + recAction(d));
   return L.join("\n");
 }
 
@@ -485,29 +466,79 @@ function stakeholderPoints(d) {
   return pts.slice(0, 5);
 }
 
-function stakeholderAction(d) {
+function riskRating(d) {
   return ({
-    "Likely Malicious": "Do not click links or reply. Block the sender and report to the security team.",
-    "Suspicious": "Treat with caution — verify through a known, trusted contact before acting, and do not enter credentials.",
-    "Low–Moderate": "Proceed with normal caution.",
-    "Likely Legitimate": "No special action needed; this can be treated as legitimate."
-  })[d.verdict] || "Refer to the security team.";
+    "Likely Malicious": "HIGH", "Suspicious": "ELEVATED",
+    "Low–Moderate": "LOW–MODERATE", "Likely Legitimate": "LOW"
+  })[d.verdict] || "UNKNOWN";
 }
 
-function fmtStakeholder(d) {
-  const plain = ({
-    "Likely Malicious": "LIKELY MALICIOUS", "Suspicious": "SUSPICIOUS",
-    "Low–Moderate": "LOW-TO-MODERATE RISK", "Likely Legitimate": "LIKELY LEGITIMATE"
-  })[d.verdict] || d.verdict;
+// Executive — C-suite risk brief: decision-oriented, minimal jargon.
+function fmtExecutive(d) {
+  const bottom = ({
+    "Likely Malicious": "This domain is assessed as malicious and should be blocked. Allowing it exposes staff to phishing, business email compromise, and potential financial loss.",
+    "Suspicious": "This domain shows warning signs and should be treated with caution pending a brief investigation.",
+    "Low–Moderate": "This domain carries limited risk. Normal precautions and monitoring are sufficient.",
+    "Likely Legitimate": "This domain appears legitimate and poses no significant risk to the organization at this time."
+  })[d.verdict] || "Manual review required.";
+  const decision = ({
+    "Likely Malicious": "Authorize blocking at email/web gateways and notify potentially affected users.",
+    "Suspicious": "Approve quarantine and a short investigation before any release.",
+    "Low–Moderate": "No immediate action; continue routine monitoring.",
+    "Likely Legitimate": "No action required."
+  })[d.verdict] || "Defer to the security team.";
+
   const L = [];
-  L.push("Subject: Security assessment of " + d.defanged);
+  L.push("EXECUTIVE SECURITY BRIEF");
   L.push("");
-  L.push("We reviewed " + d.defanged + " and assess it as " + plain + " (risk score " + d.score + " out of 100).");
+  L.push("Asset reviewed: " + d.defanged + " (" + d.kind + ")");
+  L.push("Risk rating:    " + riskRating(d) + " — " + d.verdict + " (" + d.score + "/100)");
   L.push("");
-  L.push("What we found:");
-  stakeholderPoints(d).forEach(function (p) { L.push("• " + p); });
+  L.push("Bottom line:");
+  L.push(bottom);
   L.push("");
-  L.push("Recommended action: " + stakeholderAction(d));
+  L.push("Why:");
+  stakeholderPoints(d).slice(0, 3).forEach(function (p) { L.push("• " + p); });
+  L.push("");
+  L.push("Recommended decision: " + decision);
+  L.push("");
+  L.push("Prepared by SC4N automated triage · " + new Date().toISOString());
+  return L.join("\n");
+}
+
+// End User — plain guidance for non-technical staff.
+function fmtEndUser(d) {
+  const danger = d.verdict === "Likely Malicious" || d.verdict === "Suspicious";
+  const result = ({
+    "Likely Malicious": "⚠ This looks DANGEROUS — do not interact with it.",
+    "Suspicious": "⚠ This looks SUSPICIOUS — be very careful.",
+    "Low–Moderate": "This is probably okay, but stay alert.",
+    "Likely Legitimate": "✓ This looks SAFE."
+  })[d.verdict] || "Unable to determine — check with IT Security.";
+  const plain = ({
+    "Likely Malicious": "It has the hallmarks of a scam or fake website.",
+    "Suspicious": "Some details about it look off.",
+    "Low–Moderate": "Nothing major stood out, but it's not clearly trusted either.",
+    "Likely Legitimate": "It looks like a normal, established website."
+  })[d.verdict] || "";
+
+  const L = [];
+  L.push("IS THIS SAFE?");
+  L.push("");
+  L.push("We checked: " + d.defanged);
+  L.push("");
+  L.push("Result: " + result);
+  if (plain) L.push("In plain terms: " + plain);
+  L.push("");
+  L.push("What you should do:");
+  if (danger) {
+    L.push("• Do NOT click any links or open attachments.");
+    L.push("• Do NOT reply or enter any passwords or personal information.");
+    L.push("• Report the message to IT Security, then delete it.");
+  } else {
+    L.push("• You can proceed as normal.");
+    L.push("• If anything still feels off, contact IT Security before acting.");
+  }
   return L.join("\n");
 }
 
