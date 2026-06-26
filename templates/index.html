@@ -15,7 +15,7 @@
     <span class="name">SC<span>4N</span></span>
   </h1>
   <div class="hdr-rail">
-    <div class="clock" id="clock" title="Click to copy ISO 8601 UTC timestamp (for ticket/log notes)">
+    <div class="clock" id="clock">
       <div class="ck"><span class="z">PT</span><span class="t" id="z-pt">--:--:--</span></div>
       <div class="ck"><span class="z">MT</span><span class="t" id="z-mt">--:--:--</span></div>
       <div class="ck"><span class="z">CT</span><span class="t" id="z-ct">--:--:--</span></div>
@@ -54,15 +54,27 @@ const LOADER_STEPS = [
   "Scoring risk signals",
 ];
 function startLoader(target) {
-  let i = 0;
+  let pct = 0;
   $("status").innerHTML =
-    '<div class="loader fade-in"><div class="loader-bar"><i></i></div>' +
-    '<div class="loader-step" id="loaderStep"><b>' + esc(target) + '</b> — ' + LOADER_STEPS[0] + '…</div></div>';
+    '<div class="loader fade-in"><div class="loader-bar"><i id="loaderFill"></i></div>' +
+    '<div class="loader-step">' +
+    '<span class="lstep" id="loaderStep"><b>' + esc(target) + '</b> — ' + LOADER_STEPS[0] + '…</span>' +
+    '<span class="lpct" id="loaderPct">0%</span></div></div>';
   loaderTimer = setInterval(function () {
-    i = (i + 1) % LOADER_STEPS.length;
-    const s = $("loaderStep");
-    if (s) s.innerHTML = '<b>' + esc(target) + '</b> — ' + LOADER_STEPS[i] + '…';
-  }, 850);
+    // Ease toward ~92% (we can't know real progress); completion snaps to 100%.
+    pct += Math.max(0.6, (92 - pct) * 0.09);
+    if (pct > 92) pct = 92;
+    const idx = Math.min(LOADER_STEPS.length - 1, Math.floor(pct / (92 / LOADER_STEPS.length)));
+    const fill = $("loaderFill"), s = $("loaderStep"), p = $("loaderPct");
+    if (fill) fill.style.width = pct + "%";
+    if (s) s.innerHTML = '<b>' + esc(target) + '</b> — ' + LOADER_STEPS[idx] + '…';
+    if (p) p.textContent = Math.round(pct) + "%";
+  }, 500);
+}
+function finishLoader() {
+  const fill = $("loaderFill"), p = $("loaderPct");
+  if (fill) fill.style.width = "100%";
+  if (p) p.textContent = "100%";
 }
 function stopLoader() { if (loaderTimer) { clearInterval(loaderTimer); loaderTimer = null; } }
 
@@ -80,12 +92,15 @@ async function analyze() {
   try {
     const res = await fetch("/analyze", { method: "POST", body: form });
     const data = await res.json();
-    stopLoader();
     if (!data.ok) {
+      stopLoader();
       $("output").innerHTML = '<div class="err">✗ ' + esc(data.error || "Analysis failed") + '</div>';
       $("status").innerHTML = "";
       return;
     }
+    finishLoader();
+    await new Promise(r => setTimeout(r, 220));
+    stopLoader();
     render(data);
     $("status").innerHTML = '✓ Triage complete · ' + esc(data.kind) + ' · ' + esc(data.domain);
   } catch (e) {
@@ -496,11 +511,11 @@ function copySummary() {
 
 /* ---------- header clocks: US zones + UTC (DST-aware via Intl) ---------- */
 const CLOCK_ZONES = [
-  ["z-pt", "America/Los_Angeles"],
-  ["z-mt", "America/Denver"],
-  ["z-ct", "America/Chicago"],
-  ["z-et", "America/New_York"],
-  ["z-utc", "UTC"],
+  ["z-pt", "America/Los_Angeles", "PT"],
+  ["z-mt", "America/Denver", "MT"],
+  ["z-ct", "America/Chicago", "CT"],
+  ["z-et", "America/New_York", "ET"],
+  ["z-utc", "UTC", "UTC"],
 ];
 function zoneTime(tz) {
   try {
@@ -509,22 +524,43 @@ function zoneTime(tz) {
     }).format(new Date());
   } catch (e) { return "--:--:--"; }
 }
+// Full timestamp for clipboard: ISO-8601 for UTC, "YYYY-MM-DD HH:MM:SS TZ" otherwise.
+function zoneStamp(tz, label) {
+  if (tz === "UTC") return new Date().toISOString();
+  try {
+    const s = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    }).format(new Date());
+    return s.replace(",", "") + " " + label;
+  } catch (e) { return label + " " + zoneTime(tz); }
+}
 function tickClock() {
   CLOCK_ZONES.forEach(function (z) {
     const el = $(z[0]);
-    if (el) el.textContent = zoneTime(z[1]) + (z[0] === "z-utc" ? "Z" : "");
+    if (el && !el.dataset.flash) el.textContent = zoneTime(z[1]) + (z[0] === "z-utc" ? "Z" : "");
   });
 }
 (function initClock() {
-  const c = $("clock");
-  if (c) c.onclick = function () {
-    const iso = new Date().toISOString();
-    navigator.clipboard.writeText(iso).then(function () {
-      const z = $("z-utc"), o = z.textContent;
-      z.textContent = "copied";
-      setTimeout(function () { z.textContent = o; }, 1000);
-    });
-  };
+  CLOCK_ZONES.forEach(function (z) {
+    const el = $(z[0]);
+    if (!el) return;
+    const ck = el.closest(".ck");
+    ck.title = "Click to copy " + z[2] + " timestamp";
+    ck.onclick = function () {
+      navigator.clipboard.writeText(zoneStamp(z[1], z[2])).then(function () {
+        const prev = el.textContent;
+        el.dataset.flash = "1";
+        el.textContent = "copied";
+        ck.classList.add("flash");
+        setTimeout(function () {
+          delete el.dataset.flash;
+          ck.classList.remove("flash");
+          el.textContent = prev;
+        }, 1000);
+      });
+    };
+  });
   tickClock();
   setInterval(tickClock, 1000);
 })();
