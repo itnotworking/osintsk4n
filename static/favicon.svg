@@ -1,30 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <defs>
-    <radialGradient id="g" cx="50%" cy="50%" r="60%">
-      <stop offset="0%" stop-color="#10202f"/>
+    <radialGradient id="bg" cx="50%" cy="42%" r="65%">
+      <stop offset="0%" stop-color="#12202e"/>
       <stop offset="100%" stop-color="#0a0d12"/>
     </radialGradient>
-    <linearGradient id="sweep" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#4ea1ff" stop-opacity="0.55"/>
-      <stop offset="100%" stop-color="#4ea1ff" stop-opacity="0"/>
+    <linearGradient id="blade" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7cc0ff"/>
+      <stop offset="100%" stop-color="#2f6feb"/>
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="13" fill="url(#g)"/>
-  <g fill="none" stroke="#1d3a57" stroke-width="1.6">
-    <circle cx="32" cy="32" r="22"/>
-    <circle cx="32" cy="32" r="14"/>
-    <circle cx="32" cy="32" r="6"/>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <!-- outer iris ring -->
+  <circle cx="32" cy="32" r="18" fill="none" stroke="#1f3b58" stroke-width="2"/>
+  <!-- aperture blades (6-fold swirl) -->
+  <g stroke="url(#blade)" stroke-width="2.6" stroke-linecap="round">
+    <line x1="32" y1="14.5" x2="38.1" y2="25" transform="rotate(0 32 32)"/>
+    <line x1="32" y1="14.5" x2="38.1" y2="25" transform="rotate(60 32 32)"/>
+    <line x1="32" y1="14.5" x2="38.1" y2="25" transform="rotate(120 32 32)"/>
+    <line x1="32" y1="14.5" x2="38.1" y2="25" transform="rotate(180 32 32)"/>
+    <line x1="32" y1="14.5" x2="38.1" y2="25" transform="rotate(240 32 32)"/>
+    <line x1="32" y1="14.5" x2="38.1" y2="25" transform="rotate(300 32 32)"/>
   </g>
-  <g stroke="#1d3a57" stroke-width="1.2">
-    <line x1="32" y1="10" x2="32" y2="54"/>
-    <line x1="10" y1="32" x2="54" y2="32"/>
-  </g>
-  <!-- sweep wedge -->
-  <path d="M32 32 L32 10 A22 22 0 0 1 53 25 Z" fill="url(#sweep)"/>
-  <!-- sweep edge -->
-  <line x1="32" y1="32" x2="53" y2="25" stroke="#4ea1ff" stroke-width="2" stroke-linecap="round"/>
-  <!-- blip -->
-  <circle cx="43" cy="22" r="3" fill="#4ea1ff"/>
-  <circle cx="43" cy="22" r="6" fill="#4ea1ff" opacity="0.25"/>
-  <circle cx="32" cy="32" r="2.4" fill="#4ea1ff"/>
+  <!-- pupil -->
+  <circle cx="32" cy="32" r="4" fill="#4ea1ff"/>
+  <circle cx="32" cy="32" r="7.5" fill="#4ea1ff" opacity="0.12"/>
 </svg>
