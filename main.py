@@ -3,6 +3,7 @@ osintsk4n — FastAPI front door.
 Thin routing layer; all intelligence lives in analyzer.py.
 """
 
+import re
 import time
 import asyncio
 from collections import defaultdict, deque
@@ -85,3 +86,28 @@ async def analyze(request: Request, target: str = Form(...)):
     result = await asyncio.to_thread(analyzer.analyze, target)
     status = 200 if result.get("ok") else 400
     return JSONResponse(result, status_code=status)
+
+
+@app.post("/urlscan/submit", response_class=JSONResponse)
+async def urlscan_submit(request: Request, target: str = Form(...)):
+    ip = _client_ip(request)
+    if not _rate_ok(ip):
+        return JSONResponse({"error": "Rate limit exceeded — slow down."}, status_code=429)
+    if not target or len(target) > 2048:
+        return JSONResponse({"error": "Invalid input."}, status_code=400)
+    scan_url, reg = await asyncio.to_thread(analyzer.scan_url_for, target)
+    if not scan_url:
+        return JSONResponse({"error": "Could not derive a URL to scan."}, status_code=400)
+    res = await asyncio.to_thread(analyzer.urlscan_submit, scan_url)
+    res["reg"] = reg
+    res["scan_url"] = scan_url
+    return JSONResponse(res, status_code=200 if res.get("uuid") else 502)
+
+
+@app.get("/urlscan/result/{uuid}", response_class=JSONResponse)
+async def urlscan_result(uuid: str, reg: str = ""):
+    if not re.fullmatch(r"[0-9a-fA-F-]{16,64}", uuid or ""):
+        return JSONResponse({"error": "Bad scan id."}, status_code=400)
+    reg = reg[:255] if reg else None
+    res = await asyncio.to_thread(analyzer.urlscan_result, uuid, reg)
+    return JSONResponse(res)

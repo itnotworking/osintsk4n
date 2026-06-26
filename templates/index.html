@@ -89,7 +89,9 @@ async function analyze() {
   }
 }
 
+let current = null;
 function render(d) {
+  current = d;
   $("output").innerHTML = verdictBanner(d) + cards(d);
 }
 
@@ -179,9 +181,8 @@ function cards(d) {
     kvrow("TXT", (d.txt||[]).join("\n") || "None", (d.txt && d.txt.length ? "scroll-val" : ""))
   ));
 
-  // urlscan + crtsh — only shown when they actually returned data
-  if (d.urlscan && d.urlscan.results && d.urlscan.results.length)
-    out.push(card("urlscan.io", urlscanBlock(d.urlscan)));
+  // urlscan — always shown (offers live scan even with no prior data)
+  out.push(card("urlscan.io", '<div id="urlscanBody">' + urlscanBlock(d.urlscan) + '</div>'));
   if (d.crtsh && d.crtsh.subdomains && d.crtsh.subdomains.length)
     out.push(card("Subdomains (crt.sh)", crtBlock(d.crtsh)));
 
@@ -221,33 +222,89 @@ function abuseBlock(a) {
          kvrow("Usage type", a.usageType || "?") +
          kvrow("Domain", a.domain || "—");
 }
+function liveBtn(label) {
+  return '<button class="livebtn" id="liveScanBtn" onclick="runLiveScan()">' + label + '</button>';
+}
+
+// Render from the /analyze urlscan payload (has results[]) OR a live-scan result (single).
 function urlscanBlock(u) {
-  if (!u || !u.results || !u.results.length) return '<pre class="muted">No recent urlscan submissions</pre>';
+  if (!u || !u.results || !u.results.length) {
+    return '<div class="muted" style="margin-bottom:12px">No prior urlscan submissions for this target.</div>' +
+           liveBtn('▶ Run live scan');
+  }
+  const top = u.results[0];
+  let html = urlscanVerdictRows(u);
+  html += kvrow("Recent scans", u.count || u.results.length);
+  if (top && top.screenshot) html += shot(top.screenshot, top.result);
+  html += u.results.slice(0, 3).map(r =>
+    '<div style="margin-top:6px"><a href="' + esc(r.result) + '" target="_blank" rel="noopener">' +
+    esc((r.url || "").slice(0, 55)) + '</a><div class="muted" style="font-size:11px">' +
+    esc((r.time || "").slice(0, 10)) + '</div></div>').join("");
+  html += '<div style="margin-top:14px">' + liveBtn('▶ Re-scan live') + '</div>';
+  return html;
+}
+
+// Shared verdict/redirect rows (used by both stored + live results).
+function urlscanVerdictRows(u) {
   let html = "";
   const v = u.verdict;
   if (v) {
-    html += kvrow("Verdict", v.malicious ? "MALICIOUS" : "no detection", v.malicious ? "bad" : "good");
-    html += kvrow("Score", v.score);
+    html += kvrow("urlscan engine", v.malicious ? "MALICIOUS" : "no detection", v.malicious ? "bad" : "");
+    if (v.score) html += kvrow("Engine score", v.score);
     if (v.brands && v.brands.length) html += kvrow("Impersonates", v.brands.join(", "), "bad");
     if (v.categories && v.categories.length) html += kvrow("Categories", v.categories.join(", "));
   }
   if (u.redirect && u.redirect.offsite) {
     html += kvrow("⚠ Redirect", "Lands on " + u.redirect.to_reg + " — off-domain", "bad");
   } else if (u.final_domain) {
-    html += kvrow("Lands on", u.final_domain, "good");
+    html += kvrow("Lands on", u.final_domain);
   }
-  html += kvrow("Recent scans", u.count || u.results.length);
-  const top = u.results[0];
-  if (top && top.screenshot) {
-    html += '<a href="' + esc(top.result) + '" target="_blank" rel="noopener">' +
-      '<img src="' + esc(top.screenshot) + '" alt="urlscan screenshot" ' +
-      'style="margin-top:8px;width:100%;border:1px solid var(--line);border-radius:4px" loading="lazy"></a>';
-  }
-  html += u.results.slice(0, 3).map(r =>
-    '<div style="margin-top:6px"><a href="' + esc(r.result) + '" target="_blank" rel="noopener">' +
-    esc((r.url || "").slice(0, 55)) + '</a><div class="muted" style="font-size:11px">' +
-    esc((r.time || "").slice(0, 10)) + '</div></div>').join("");
   return html;
+}
+
+function shot(url, link) {
+  return '<a href="' + esc(link || url) + '" target="_blank" rel="noopener">' +
+    '<img src="' + esc(url) + '" alt="urlscan screenshot" ' +
+    'style="margin-top:10px;width:100%;border:1px solid var(--line);border-radius:6px" loading="lazy"></a>';
+}
+
+async function runLiveScan() {
+  if (!current) return;
+  const body = $("urlscanBody");
+  const target = current.url || current.domain;
+  body.innerHTML = '<div class="loader fade-in" style="margin:6px 0"><div class="loader-bar"><i></i></div>' +
+    '<div class="loader-step" id="liveStep">Submitting <b>' + esc(target) + '</b> to urlscan…</div></div>';
+  try {
+    const f = new FormData(); f.append("target", target);
+    const sub = await (await fetch("/urlscan/submit", { method: "POST", body: f })).json();
+    if (!sub.uuid) { body.innerHTML = '<div class="v bad">' + esc(sub.error || "Submit failed") + '</div>' + liveBtn('▶ Retry'); return; }
+    const step = $("liveStep");
+    // Poll for the result (scans take ~10-30s).
+    for (let i = 0; i < 16; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      if (step) step.innerHTML = 'Scanning <b>' + esc(target) + '</b>… (' + ((i + 1) * 3) + 's)';
+      const res = await (await fetch("/urlscan/result/" + sub.uuid + "?reg=" + encodeURIComponent(current.registrable || ""))).json();
+      if (res.ready) { renderLiveResult(res); return; }
+    }
+    body.innerHTML = '<div class="muted">Scan is taking longer than expected. ' +
+      '<a href="https://urlscan.io/result/' + esc(sub.uuid) + '/" target="_blank" rel="noopener">View on urlscan ↗</a></div>' + liveBtn('▶ Re-scan live');
+  } catch (e) {
+    body.innerHTML = '<div class="v bad">Live scan failed (network).</div>' + liveBtn('▶ Retry');
+  }
+}
+
+function renderLiveResult(res) {
+  const body = $("urlscanBody");
+  let html = '<div class="muted" style="font-size:11px;margin-bottom:10px">↻ Fresh scan · ' + esc((res.time || "").slice(0, 16).replace("T", " ")) + '</div>';
+  html += urlscanVerdictRows(res);
+  if (res.screenshot) html += shot(res.screenshot, res.result);
+  if (res.final_url) html += '<div style="margin-top:8px"><a href="' + esc(res.result) + '" target="_blank" rel="noopener">' + esc(res.final_url.slice(0, 60)) + '</a></div>';
+  html += '<div style="margin-top:14px">' + liveBtn('▶ Re-scan live') + '</div>';
+  // If the live scan revealed an off-domain redirect, call it out loudly.
+  if (res.redirect && res.redirect.offsite) {
+    html = '<div class="live-alert">⚠ Live scan: this domain redirects off-site to <b>' + esc(res.redirect.to_reg) + '</b></div>' + html;
+  }
+  body.innerHTML = html;
 }
 function crtBlock(c) {
   if (!c || !c.subdomains) return '<pre class="muted">No certificate data</pre>';

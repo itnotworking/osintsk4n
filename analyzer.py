@@ -390,6 +390,76 @@ def urlscan_search(domain):
     }
 
 
+def urlscan_submit(target_url):
+    """Submit a fresh urlscan.io scan. Returns {uuid} or {error}."""
+    if not URLSCAN_API_KEY:
+        return {"error": "Live scan needs URLSCAN_API_KEY (not configured)."}
+    try:
+        r = requests.post(
+            "https://urlscan.io/api/v1/scan/",
+            headers={"API-Key": URLSCAN_API_KEY, "Content-Type": "application/json",
+                     "User-Agent": USER_AGENT},
+            json={"url": target_url, "visibility": "unlisted"},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            return {"uuid": r.json().get("uuid")}
+        if r.status_code == 400:
+            return {"error": "urlscan rejected the URL (blacklisted or invalid)."}
+        if r.status_code == 429:
+            return {"error": "urlscan rate limit hit — try again shortly."}
+        return {"error": f"urlscan submit failed ({r.status_code})."}
+    except Exception:
+        return {"error": "Could not reach urlscan.io."}
+
+
+def urlscan_result(uuid, queried_reg=None):
+    """Poll a urlscan result. Returns {ready:False} until the scan finishes."""
+    headers = {"API-Key": URLSCAN_API_KEY} if URLSCAN_API_KEY else None
+    detail = safe_get(f"https://urlscan.io/api/v1/result/{uuid}/", headers=headers, timeout=10)
+    if not detail:
+        return {"ready": False}
+    page = detail.get("page", {}) or {}
+    task = detail.get("task", {}) or {}
+    overall = (detail.get("verdicts", {}) or {}).get("overall", {})
+    final_domain = page.get("domain")
+    if not final_domain and page.get("url"):
+        try:
+            final_domain = urlparse(page["url"]).hostname
+        except Exception:
+            final_domain = None
+    out = {
+        "ready": True,
+        "verdict": {
+            "malicious": overall.get("malicious", False),
+            "score": overall.get("score", 0),
+            "brands": [b.get("name") for b in overall.get("brands", []) if b.get("name")],
+            "categories": overall.get("categories", []),
+        },
+        "final_url": page.get("url"),
+        "final_domain": final_domain,
+        "screenshot": task.get("screenshotURL") or f"https://urlscan.io/screenshots/{uuid}.png",
+        "result": task.get("reportURL") or f"https://urlscan.io/result/{uuid}/",
+        "time": task.get("time"),
+    }
+    if final_domain and queried_reg:
+        fr = registrable_domain(final_domain)
+        if fr and fr != queried_reg:
+            out["redirect"] = {"offsite": True, "to_host": final_domain,
+                               "to_reg": fr, "final_url": page.get("url")}
+    return out
+
+
+def scan_url_for(raw_input):
+    """Resolve arbitrary analyst input into a URL suitable for live scanning."""
+    parsed = parse_target(raw_input)
+    if not parsed["ok"]:
+        return None, None
+    if parsed["kind"] == "url":
+        return parsed["url"], parsed["registrable"]
+    return f"https://{parsed['domain']}", parsed["registrable"]
+
+
 def crtsh(domain):
     """Subdomain / certificate enumeration via crt.sh (free, no key)."""
     try:

@@ -177,6 +177,17 @@ a:hover { color: #b9c0f0; text-decoration: underline; }
   letter-spacing: 1px; text-transform: uppercase;
 }
 .copybtn:hover { color: var(--text); text-decoration: underline; }
+.livebtn {
+  background: transparent; color: var(--accent); border: 1px solid var(--line);
+  border-radius: 6px; font-family: inherit; font-size: 12px; padding: 7px 14px; cursor: pointer;
+  letter-spacing: .3px; transition: border-color .15s, background .15s;
+}
+.livebtn:hover { border-color: var(--accent); background: var(--accent-soft); }
+.live-alert {
+  font-size: 12.5px; color: #e89595; padding: 8px 12px; margin-bottom: 12px;
+  border-left: 2px solid var(--crit); background: rgba(233,106,106,.08); border-radius: 0 4px 4px 0;
+}
+.live-alert b { color: #f0adad; }
 .muted { color: var(--muted); }
 .hidden { display: none; }
 .fade-in { animation: fadeIn .25s ease forwards; }
