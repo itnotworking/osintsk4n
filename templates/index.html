@@ -221,12 +221,10 @@ function cards(d) {
     kvrow("TXT", (d.txt||[]).join("\n") || "None", (d.txt && d.txt.length ? "scroll-val" : ""))
   ));
 
-  // urlscan — always shown (offers live scan even with no prior data)
-  out.push(card("urlscan.io", '<div id="urlscanBody">' + urlscanBlock(d.urlscan) + '</div>'));
   if (d.crtsh && d.crtsh.subdomains && d.crtsh.subdomains.length)
     out.push(card("Subdomains (crt.sh)", crtBlock(d.crtsh)));
 
-  return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
+  return '<div class="grid">' + out.join("") + '</div>' + urlscanSection(d) + buildTicket(d);
 }
 
 function card(title, body) {
@@ -261,22 +259,34 @@ function liveBtn(label) {
   return '<button class="livebtn" id="liveScanBtn" onclick="runLiveScan()">' + label + '</button>';
 }
 
+function urlscanSection(d) {
+  return '<div class="card us-section fade-in"><h3><span class="ttl">urlscan.io</span></h3>' +
+    '<div id="urlscanBody">' + urlscanBlock(d.urlscan) + '</div></div>';
+}
+
+// Two-column layout: details on the left, larger screenshot on the right.
+function usGrid(info, shotHtml) {
+  if (!shotHtml) return info;
+  return '<div class="us-grid"><div class="us-info">' + info + '</div>' +
+         '<div class="us-shot">' + shotHtml + '</div></div>';
+}
+
 // Render from the /analyze urlscan payload (has results[]) OR a live-scan result (single).
 function urlscanBlock(u) {
   if (!u || !u.results || !u.results.length) {
-    return '<div class="muted" style="margin-bottom:12px">No prior urlscan submissions for this target.</div>' +
+    return '<div class="muted" style="margin-bottom:16px">No prior urlscan submissions for this target. Run a fresh scan to capture a live screenshot and detect redirects.</div>' +
            liveBtn('▶ Run live scan');
   }
   const top = u.results[0];
-  let html = urlscanVerdictRows(u);
-  html += kvrow("Recent scans", u.count || u.results.length);
-  if (top && top.screenshot) html += shot(top.screenshot, top.result);
-  html += u.results.slice(0, 3).map(r =>
-    '<div style="margin-top:6px"><a href="' + esc(r.result) + '" target="_blank" rel="noopener">' +
-    esc((r.url || "").slice(0, 55)) + '</a><div class="muted" style="font-size:11px">' +
+  let info = urlscanVerdictRows(u);
+  info += kvrow("Recent scans", u.count || u.results.length);
+  info += u.results.slice(0, 4).map(r =>
+    '<div class="scanrow"><a href="' + esc(r.result) + '" target="_blank" rel="noopener">' +
+    esc(r.url || "") + '</a><div class="muted" style="font-size:11px">' +
     esc((r.time || "").slice(0, 10)) + '</div></div>').join("");
-  html += '<div style="margin-top:14px">' + liveBtn('▶ Re-scan live') + '</div>';
-  return html;
+  info += '<div style="margin-top:20px">' + liveBtn('▶ Re-scan live') + '</div>';
+  const shotHtml = (top && top.screenshot) ? shot(top.screenshot, top.result, top.url) : "";
+  return usGrid(info, shotHtml);
 }
 
 // Shared verdict/redirect rows (used by both stored + live results).
@@ -297,10 +307,10 @@ function urlscanVerdictRows(u) {
   return html;
 }
 
-function shot(url, link) {
+function shot(url, link, caption) {
   return '<a href="' + esc(link || url) + '" target="_blank" rel="noopener">' +
-    '<img src="' + esc(url) + '" alt="urlscan screenshot" ' +
-    'style="margin-top:10px;width:100%;border:1px solid var(--line);border-radius:6px" loading="lazy"></a>';
+    '<img src="' + esc(url) + '" alt="urlscan screenshot" loading="lazy"></a>' +
+    (caption ? '<div class="us-cap">' + esc(caption) + '</div>' : '');
 }
 
 async function runLiveScan() {
@@ -330,11 +340,12 @@ async function runLiveScan() {
 
 function renderLiveResult(res) {
   const body = $("urlscanBody");
-  let html = '<div class="muted" style="font-size:11px;margin-bottom:10px">↻ Fresh scan · ' + esc((res.time || "").slice(0, 16).replace("T", " ")) + '</div>';
-  html += urlscanVerdictRows(res);
-  if (res.screenshot) html += shot(res.screenshot, res.result);
-  if (res.final_url) html += '<div style="margin-top:8px"><a href="' + esc(res.result) + '" target="_blank" rel="noopener">' + esc(res.final_url.slice(0, 60)) + '</a></div>';
-  html += '<div style="margin-top:14px">' + liveBtn('▶ Re-scan live') + '</div>';
+  let info = '<div class="muted" style="font-size:11px;margin-bottom:12px">↻ Fresh scan · ' + esc((res.time || "").slice(0, 16).replace("T", " ")) + '</div>';
+  info += urlscanVerdictRows(res);
+  if (res.final_url) info += '<div class="scanrow"><a href="' + esc(res.result) + '" target="_blank" rel="noopener">' + esc(res.final_url) + '</a></div>';
+  info += '<div style="margin-top:20px">' + liveBtn('▶ Re-scan live') + '</div>';
+  const shotHtml = res.screenshot ? shot(res.screenshot, res.result, res.final_url) : "";
+  let html = usGrid(info, shotHtml);
   // If the live scan revealed an off-domain redirect, call it out loudly.
   if (res.redirect && res.redirect.offsite) {
     html = '<div class="live-alert">⚠ Live scan: this domain redirects off-site to <b>' + esc(res.redirect.to_reg) + '</b></div>' + html;
