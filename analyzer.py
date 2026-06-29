@@ -340,10 +340,13 @@ def rdap_domain(domain):
 def urlscan_search(domain):
     """urlscan search + verdict for the most recent scan of this domain."""
     headers = {"API-Key": URLSCAN_API_KEY} if URLSCAN_API_KEY else None
+    # task.domain = the domain actually SUBMITTED for scanning (not every domain the
+    # page merely contacted) — avoids matching unrelated scans that just loaded our
+    # domain as a third-party resource, which produced bogus "redirect" findings.
     data = safe_get(
         "https://urlscan.io/api/v1/search/",
         headers=headers,
-        params={"q": f"domain:{domain}", "size": 5},
+        params={"q": f"task.domain:{domain}", "size": 5},
     )
     if not data or not data.get("results"):
         return None
