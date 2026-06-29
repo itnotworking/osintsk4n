@@ -54,12 +54,39 @@ header h1 { margin: 0; font-size: 16px; letter-spacing: .3px; font-weight: 600; 
 .clock .ck.flash .t { color: var(--good); }
 @media (max-width: 980px) { .clock .ck:nth-child(1), .clock .ck:nth-child(2) { display: none; } }
 @media (max-width: 680px) { .clock .ck:nth-child(3) { display: none; } header { padding: 14px 18px; } .clock { gap: 12px; } }
-header h1.brand { display: flex; align-items: center; gap: 9px; }
-header h1 .logo { display: block; opacity: .9; transform-origin: 50% 50%; animation: logoSpin 5s linear infinite; }
-@keyframes logoSpin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { header h1 .logo { animation: none; } }
-header h1 .name { color: var(--text); }
-header h1 .name span { color: var(--accent); }
+header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
+/* typographic wordmark (no icon, no rotation) */
+.wm {
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", "Consolas", monospace;
+  font-weight: 800; font-size: 21px; letter-spacing: 2px; color: var(--text);
+  position: relative; padding-bottom: 4px; line-height: 1;
+}
+.wm-x { color: var(--accent); }
+.wm::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: linear-gradient(90deg, var(--accent), transparent 85%);
+}
+
+/* header threat ticker */
+.ticker {
+  flex: 1; min-width: 0; height: 22px; overflow: hidden; margin: 0 28px; position: relative;
+  -webkit-mask: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+  mask: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+}
+.ticker-track { display: inline-flex; align-items: center; gap: 36px; white-space: nowrap; will-change: transform; animation: tickerScroll 80s linear infinite; }
+.ticker:hover .ticker-track { animation-play-state: paused; }
+@keyframes tickerScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.tk-item { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.tk-item a { color: var(--muted); }
+.tk-item a:hover { color: var(--text); }
+.tk-tag {
+  font-size: 9px; letter-spacing: 1px; text-transform: uppercase; padding: 2px 7px;
+  border-radius: 4px; border: 1px solid var(--line); color: var(--faint); white-space: nowrap;
+}
+.tk-item.kev .tk-tag { color: #f0b0b0; border-color: rgba(233,106,106,.4); }
+.tk-item.kev a { color: #e8b4b4; }
+@media (prefers-reduced-motion: reduce) { .ticker-track { animation: none; } .ticker { overflow-x: auto; } }
+@media (max-width: 1000px) { .ticker { display: none; } }
 
 .wrap { max-width: 1180px; margin: 0 auto; padding: 0 32px 96px; }
 

@@ -10,10 +10,10 @@
 <body>
 
 <header>
-  <h1 class="brand">
-    <img src="/static/favicon.svg" alt="" class="logo" width="26" height="26">
-    <span class="name">SC<span>4N</span></span>
-  </h1>
+  <h1 class="brand"><span class="wm">SC<span class="wm-x">4</span>N</span></h1>
+  <div class="ticker" id="ticker" aria-label="Live threat feed">
+    <div class="ticker-track" id="tickerTrack"></div>
+  </div>
   <div class="hdr-rail">
     <div class="clock" id="clock">
       <div class="ck"><span class="z">PT</span><span class="t" id="z-pt">--:--:--</span></div>
@@ -711,6 +711,28 @@ function tickClock() {
   tickClock();
   setInterval(tickClock, 1000);
 })();
+
+/* ---------- header threat ticker (CISA KEV + security news) ---------- */
+function tickerItem(it) {
+  const isKev = it.kind === "kev";
+  const tag = isKev ? ("⚠ " + (it.cve || "EXPLOITED")) : (it.source || "NEWS");
+  return '<span class="tk-item' + (isKev ? ' kev' : '') + '">' +
+    '<span class="tk-tag">' + esc(tag) + '</span>' +
+    '<a href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.title) + '</a></span>';
+}
+async function loadTicker() {
+  try {
+    const d = await (await fetch("/feed")).json();
+    const items = (d && d.items) || [];
+    if (!items.length) return;          // nothing to show → leave header clean
+    const html = items.map(tickerItem).join("");
+    const track = $("tickerTrack");
+    track.innerHTML = html + html;      // duplicate for a seamless loop
+    track.style.animationDuration = Math.max(40, items.length * 9) + "s";
+  } catch (e) { /* feed down → silently leave ticker empty */ }
+}
+loadTicker();
+setInterval(loadTicker, 1800000);        // refresh every 30 min (matches server cache)
 </script>
 
 </body>

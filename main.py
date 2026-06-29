@@ -62,6 +62,12 @@ async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+@app.get("/feed", response_class=JSONResponse)
+async def feed():
+    items = await asyncio.to_thread(analyzer.threat_news)
+    return JSONResponse({"items": items})
+
+
 @app.get("/health")
 async def health():
     return {
