@@ -12,7 +12,7 @@ import re
 import socket
 import ipaddress
 import datetime as dt
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -24,6 +24,7 @@ OTX_API_KEY = os.environ.get("OTX_API_KEY", "")
 ABUSECH_API_KEY = os.environ.get("ABUSECH_API_KEY", "")
 GSB_API_KEY = os.environ.get("GSB_API_KEY", "")
 EMAILREP_API_KEY = os.environ.get("EMAILREP_API_KEY", "")
+IPQS_API_KEY = os.environ.get("IPQS_API_KEY", "")
 
 USER_AGENT = "osintsk4n/2.0 (SOC triage)"
 _executor = ThreadPoolExecutor(max_workers=16)
@@ -625,6 +626,38 @@ def safebrowsing(url):
     return {"flagged": True, "threats": sorted({m.get("threatType") for m in matches if m.get("threatType")})}
 
 
+def ipqs_email(email):
+    """IPQualityScore — email fraud/reputation (fraud score, abuse, breach leak, disposable…)."""
+    if not email or not IPQS_API_KEY:
+        return None
+    data = safe_get(
+        f"https://www.ipqualityscore.com/api/json/email/{IPQS_API_KEY}/{quote(email)}",
+        params={"timeout": 7, "fast": "true"}, timeout=12,
+    )
+    if not data or data.get("success") is False:
+        return None
+
+    def _human(v):
+        return v.get("human") if isinstance(v, dict) else v
+
+    return {
+        "fraud_score": data.get("fraud_score"),
+        "deliverability": data.get("deliverability"),
+        "valid": data.get("valid"),
+        "disposable": data.get("disposable"),
+        "recent_abuse": data.get("recent_abuse"),
+        "leaked": data.get("leaked"),
+        "honeypot": data.get("honeypot"),
+        "spam_trap_score": data.get("spam_trap_score"),
+        "frequent_complainer": data.get("frequent_complainer"),
+        "suspect": data.get("suspect"),
+        "catch_all": data.get("catch_all"),
+        "dns_valid": data.get("dns_valid"),
+        "domain_age": _human(data.get("domain_age")),
+        "first_seen": _human(data.get("first_seen")),
+    }
+
+
 def emailrep_lookup(email):
     """EmailRep.io — reputation of an email address (suspicious/malicious, breaches, profiles)."""
     if not email:
@@ -956,6 +989,22 @@ def score(result):
         pts += 15
         reasons.append("GreyNoise: source IP classified malicious")
 
+    iq = result.get("ipqs")
+    if iq:
+        fs = iq.get("fraud_score") or 0
+        if iq.get("recent_abuse") or fs >= 85:
+            pts += 25
+            reasons.append(f"IPQS: recent abuse / high fraud score ({fs})")
+            bec.append("IPQS high fraud/abuse")
+        elif fs >= 60:
+            pts += 14; reasons.append(f"IPQS fraud score {fs}")
+        if iq.get("honeypot") or iq.get("spam_trap_score") in ("high", "medium"):
+            pts += 10; reasons.append("IPQS: spam-trap / honeypot indicators")
+        if iq.get("disposable") and not result.get("disposable"):
+            pts += 12; reasons.append("IPQS: disposable/temporary email")
+        if iq.get("leaked"):
+            reasons.append("IPQS: address found in data breaches")
+
     er = result.get("emailrep")
     if er:
         if er.get("malicious_activity"):
@@ -1021,6 +1070,7 @@ def analyze(raw_input):
         "greynoise": _executor.submit(greynoise_lookup, ip),
         "gsb":   _executor.submit(safebrowsing, parsed["url"] or f"https://{domain}"),
         "emailrep": _executor.submit(emailrep_lookup, parsed["email"]),
+        "ipqs":  _executor.submit(ipqs_email, parsed["email"]),
     }
     res = {k: f.result() for k, f in futures.items()}
 
@@ -1065,7 +1115,7 @@ def analyze(raw_input):
         "otx": res["otx"], "threatfox": res["threatfox"],
         "urlhaus": res["urlhaus"], "shodan": res["shodan"],
         "greynoise": res["greynoise"], "gsb": res["gsb"],
-        "emailrep": res["emailrep"],
+        "emailrep": res["emailrep"], "ipqs": res["ipqs"],
         # derived
         "age_days": age_days, "registered": reg_date,
         "spf_parsed": spf, "dmarc_parsed": dmarc,

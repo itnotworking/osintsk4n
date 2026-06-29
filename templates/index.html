@@ -194,7 +194,7 @@ function cards(d) {
   ));
 
   // Email reputation (only for email queries)
-  if (d.kind === "email") out.push(card("Email Reputation", emailRepBlock(d.emailrep)));
+  if (d.kind === "email") out.push(card("Email Reputation", emailRepBlock(d)));
 
   // Domain reputation / age
   const ev = d.rdap_events || {};
@@ -327,18 +327,31 @@ function ipRepBlock(d) {
   return html;
 }
 
-function emailRepBlock(e) {
-  if (!e) return '<pre class="muted">No EmailRep data (set EMAILREP_API_KEY, or address not found)</pre>';
-  const rep = (e.reputation || "none");
-  const repCls = rep === "high" ? "good" : (rep === "low" ? "bad" : "warn");
-  return kvrow("Reputation", rep, repCls) +
-    kvrow("Suspicious", e.suspicious ? "YES" : "no", e.suspicious ? "bad" : "good") +
-    kvrow("Malicious activity", e.malicious_activity ? "YES" : "no", e.malicious_activity ? "bad" : "good") +
-    kvrow("In breaches", (e.data_breach || e.credentials_leaked) ? "YES" : "no", (e.data_breach || e.credentials_leaked) ? "warn" : "good") +
-    kvrow("Spam", e.spam ? "YES" : "no", e.spam ? "warn" : "") +
-    (e.references != null ? kvrow("References", e.references) : "") +
-    ((e.profiles && e.profiles.length) ? kvrow("Profiles", e.profiles.join(", ")) : "") +
-    (e.first_seen ? kvrow("First seen", e.first_seen) : "");
+function emailRepBlock(d) {
+  const iq = d.ipqs, e = d.emailrep;
+  if (!iq && !e) return '<pre class="muted">No email reputation data (set IPQS_API_KEY)</pre>';
+  let html = "";
+  // IPQualityScore (primary)
+  if (iq) {
+    const fs = iq.fraud_score || 0;
+    html += kvrow("Fraud score", fs + "/100", fs >= 85 ? "bad" : (fs >= 60 ? "warn" : "good")) +
+      kvrow("Deliverability", iq.deliverability || "?", iq.deliverability === "low" ? "warn" : "") +
+      kvrow("Recent abuse", iq.recent_abuse ? "YES" : "no", iq.recent_abuse ? "bad" : "good") +
+      kvrow("In breaches", iq.leaked ? "YES" : "no", iq.leaked ? "warn" : "good") +
+      kvrow("Disposable", iq.disposable ? "YES" : "no", iq.disposable ? "bad" : "good") +
+      (iq.honeypot ? kvrow("Honeypot", "YES", "bad") : "") +
+      (iq.spam_trap_score && iq.spam_trap_score !== "none" ? kvrow("Spam trap", iq.spam_trap_score, "warn") : "") +
+      (iq.first_seen ? kvrow("First seen", iq.first_seen) : "");
+  }
+  // EmailRep (fallback / supplementary, if its key is set and returns)
+  if (e) {
+    if (iq) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">EmailRep.io</div>';
+    const rep = (e.reputation || "none");
+    html += kvrow("Reputation", rep, rep === "high" ? "good" : (rep === "low" ? "bad" : "warn")) +
+      kvrow("Suspicious", e.suspicious ? "YES" : "no", e.suspicious ? "bad" : "good") +
+      ((e.profiles && e.profiles.length) ? kvrow("Profiles", e.profiles.join(", ")) : "");
+  }
+  return html;
 }
 
 function liveBtn(label) {
@@ -528,6 +541,8 @@ function stakeholderPoints(d) {
     pts.push("It appears in recognized threat databases as known-malicious infrastructure.");
   if (d.otx && d.otx.pulse_count > 0 && ((d.otx.malware_families || []).length || (d.otx.adversaries || []).length))
     pts.push("It is linked to reported threat activity (associated malware or threat actors).");
+  if (d.ipqs && (d.ipqs.recent_abuse || (d.ipqs.fraud_score || 0) >= 85))
+    pts.push("This email address shows signs of fraudulent or abusive activity.");
   if (d.age_days != null) {
     if (d.age_days < 90) pts.push("The domain was registered very recently (" + d.age_days + (d.age_days === 1 ? " day" : " days") + " ago) — a common trait of fraudulent or throwaway sites.");
     else pts.push("The domain has been established for " + Math.floor(d.age_days / 365) + "+ years, consistent with a legitimate organization.");

@@ -20,3 +20,5 @@ services:
         sync: false
       - key: EMAILREP_API_KEY
         sync: false
+      - key: IPQS_API_KEY
+        sync: false
