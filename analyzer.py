@@ -505,8 +505,22 @@ def otx_lookup(domain):
     }
 
 
-def threatfox_lookup(ioc):
-    """abuse.ch ThreatFox — is this a known malware/C2 IOC?"""
+def _ioc_host(value):
+    """Extract the host from a ThreatFox IOC value (url, domain, ip:port)."""
+    if not value:
+        return ""
+    v = value.lower().strip()
+    if "://" in v:
+        v = urlparse(v).hostname or v
+    v = v.split("/")[0]   # strip any path
+    v = v.split(":")[0]   # strip any port
+    return v
+
+
+def threatfox_lookup(ioc, registrable=None):
+    """abuse.ch ThreatFox — is this EXACT host a known malware/C2 IOC?
+    ThreatFox search is substring-ish, so we filter to exact-host matches to avoid
+    false-flagging legitimate infra that malware merely abuses (e.g. drive.google.com)."""
     if not ioc:
         return None
     headers = {"User-Agent": USER_AGENT}
@@ -523,7 +537,14 @@ def threatfox_lookup(ioc):
         return None
     if d.get("query_status") != "ok" or not d.get("data"):
         return {"found": False}
-    rows = d["data"]
+
+    target = (ioc or "").lower()
+    reg = (registrable or "").lower()
+    rows = [row for row in d["data"]
+            if _ioc_host(row.get("ioc")) in (target, reg) and (target or reg)]
+    if not rows:
+        return {"found": False}
+
     fams, tags, first = set(), set(), None
     for row in rows[:10]:
         if row.get("malware_printable"):
@@ -1064,7 +1085,7 @@ def analyze(raw_input):
         "crtsh": _executor.submit(crtsh, parsed["registrable"]),
         "dkim":  _executor.submit(check_dkim, domain),
         "otx":   _executor.submit(otx_lookup, parsed["registrable"]),
-        "threatfox": _executor.submit(threatfox_lookup, domain),
+        "threatfox": _executor.submit(threatfox_lookup, domain, parsed["registrable"]),
         "urlhaus": _executor.submit(urlhaus_host, domain),
         "shodan": _executor.submit(shodan_internetdb, ip),
         "greynoise": _executor.submit(greynoise_lookup, ip),
