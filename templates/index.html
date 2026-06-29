@@ -328,11 +328,22 @@ function ipRepBlock(d) {
 }
 
 function emailRepBlock(d) {
-  const iq = d.ipqs, e = d.emailrep;
-  if (!iq && !e) return '<pre class="muted">No email reputation data (set IPQS_API_KEY)</pre>';
+  const dis = d.disify, iq = d.ipqs, e = d.emailrep;
+  if (!dis && !iq && !e) return '<pre class="muted">No email reputation data available.</pre>';
   let html = "";
-  // IPQualityScore (primary)
+  // Disify — always-on baseline (no key)
+  if (dis) {
+    const sig = dis.signals || [];
+    html += kvrow("Valid format", dis.format ? "yes" : "no", dis.format ? "good" : "bad") +
+      kvrow("Mail records", dis.dns ? "present" : "NONE (no MX)", dis.dns ? "good" : "bad") +
+      kvrow("Disposable", dis.disposable ? "YES" : "no", dis.disposable ? "bad" : "good") +
+      kvrow("Free provider", dis.free ? "yes" : "no") +
+      (dis.role ? kvrow("Role account", "yes (e.g. admin@ / info@)", "warn") : "") +
+      (sig.length ? kvrow("Signals", sig.join(", "), sig.indexOf("high_entropy") >= 0 ? "warn" : "") : "");
+  }
+  // IPQualityScore (optional, if key)
   if (iq) {
+    if (dis) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">IPQualityScore</div>';
     const fs = iq.fraud_score || 0;
     html += kvrow("Fraud score", fs + "/100", fs >= 85 ? "bad" : (fs >= 60 ? "warn" : "good")) +
       kvrow("Deliverability", iq.deliverability || "?", iq.deliverability === "low" ? "warn" : "") +
@@ -543,6 +554,10 @@ function stakeholderPoints(d) {
     pts.push("It is linked to reported threat activity (associated malware or threat actors).");
   if (d.ipqs && (d.ipqs.recent_abuse || (d.ipqs.fraud_score || 0) >= 85))
     pts.push("This email address shows signs of fraudulent or abusive activity.");
+  if (d.disify && d.disify.disposable)
+    pts.push("It uses a disposable/throwaway email provider — unusual for a legitimate business sender.");
+  else if (d.disify && d.disify.dns === false)
+    pts.push("Its domain has no mail (MX) records, so it cannot actually receive email — a common trait of spoofed or fake senders.");
   if (d.age_days != null) {
     if (d.age_days < 90) pts.push("The domain was registered very recently (" + d.age_days + (d.age_days === 1 ? " day" : " days") + " ago) — a common trait of fraudulent or throwaway sites.");
     else pts.push("The domain has been established for " + Math.floor(d.age_days / 365) + "+ years, consistent with a legitimate organization.");

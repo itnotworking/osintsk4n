@@ -682,6 +682,26 @@ def ipqs_email(email):
     }
 
 
+def disify_email(email):
+    """Disify (free, no key, no signup) — email validity, disposable, MX/DNS, freemail, role."""
+    if not email:
+        return None
+    data = safe_get(f"https://disify.com/api/email/{quote(email)}", timeout=8)
+    if not data:
+        return None
+    return {
+        "format": data.get("format"),
+        "disposable": data.get("disposable"),
+        "dns": data.get("dns"),
+        "free": data.get("free"),
+        "role": data.get("role"),
+        "whitelist": data.get("whitelist"),
+        "confidence": data.get("confidence"),
+        "signals": data.get("signals") or [],
+        "mx_info": data.get("mx_info") or [],
+    }
+
+
 def emailrep_lookup(email):
     """EmailRep.io — reputation of an email address (suspicious/malicious, breaches, profiles)."""
     if not email:
@@ -1013,6 +1033,16 @@ def score(result):
         pts += 15
         reasons.append("GreyNoise: source IP classified malicious")
 
+    dis = result.get("disify")
+    if dis:
+        sig = dis.get("signals") or []
+        if dis.get("disposable") and not result.get("disposable"):
+            pts += 12; reasons.append("Disposable/temporary email domain (Disify)"); bec.append("Disposable email domain")
+        if dis.get("dns") is False:
+            pts += 8; reasons.append("Email domain has no MX records (cannot receive mail)")
+        if "high_entropy" in sig:
+            pts += 8; reasons.append("Email domain looks algorithmically generated (high entropy)")
+
     iq = result.get("ipqs")
     if iq:
         fs = iq.get("fraud_score") or 0
@@ -1095,6 +1125,7 @@ def analyze(raw_input):
         "gsb":   _executor.submit(safebrowsing, parsed["url"] or f"https://{domain}"),
         "emailrep": _executor.submit(emailrep_lookup, parsed["email"]),
         "ipqs":  _executor.submit(ipqs_email, parsed["email"]),
+        "disify": _executor.submit(disify_email, parsed["email"]),
     }
     res = {k: f.result() for k, f in futures.items()}
 
@@ -1139,7 +1170,7 @@ def analyze(raw_input):
         "otx": res["otx"], "threatfox": res["threatfox"],
         "urlhaus": res["urlhaus"], "shodan": res["shodan"],
         "greynoise": res["greynoise"], "gsb": res["gsb"],
-        "emailrep": res["emailrep"], "ipqs": res["ipqs"],
+        "emailrep": res["emailrep"], "ipqs": res["ipqs"], "disify": res["disify"],
         # derived
         "age_days": age_days, "registered": reg_date,
         "spf_parsed": spf, "dmarc_parsed": dmarc,
