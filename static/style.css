@@ -27,12 +27,12 @@
 html, body { margin: 0; padding: 0; min-height: 100%; }
 body {
   background-color: var(--bg);
-  /* faint dot-grid + a soft overhead lift for console-scope atmosphere */
+  /* fine console grid + a soft periwinkle overhead lift for atmospheric depth */
   background-image:
-    radial-gradient(ellipse 70% 55% at 50% -8%, rgba(154,163,230,0.06), transparent 70%),
-    radial-gradient(rgba(255,255,255,0.02) 1px, transparent 1px);
-  background-size: 100% 100%, 23px 23px;
-  background-attachment: fixed;
+    radial-gradient(ellipse 75% 55% at 50% -6%, rgba(154,163,230,0.10), transparent 72%),
+    linear-gradient(rgba(255,255,255,0.032) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.032) 1px, transparent 1px);
+  background-size: 100% 100%, 34px 34px, 34px 34px;
   color: var(--text);
   font-family: var(--mono);
   font-size: 14px;
@@ -134,6 +134,8 @@ header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
 }
 .search button:hover { color: var(--text); }
 .search button:disabled { color: var(--faint); cursor: not-allowed; }
+.search button.stop { color: var(--bad); }
+.search button.stop::before { content: "■ "; font-size: 10px; }
 .hint { text-align: center; font-size: 11.5px; color: var(--muted); max-width: 680px; margin: 0 auto 40px; }
 .hint code { color: var(--accent); padding: 0 3px; }
 

@@ -28,7 +28,7 @@
 <div class="wrap">
   <form class="search" onsubmit="event.preventDefault(); analyze();">
     <input id="target" placeholder="domain, URL, or email — defanged is fine (hxxp://evil[.]com)" autocomplete="off" autofocus>
-    <button id="analyzeBtn" type="submit">Analyze</button>
+    <button id="analyzeBtn" type="button" onclick="toggleSearch()">Analyze</button>
   </form>
   <p class="hint">
     Accepts <code>example.com</code>, <code>https://x.com/path</code>, <code>user@example.com</code>.
@@ -78,11 +78,33 @@ function finishLoader() {
 }
 function stopLoader() { if (loaderTimer) { clearInterval(loaderTimer); loaderTimer = null; } }
 
+let currentController = null;
+let isRunning = false;
+
+function setRunning(on) {
+  isRunning = on;
+  const btn = $("analyzeBtn");
+  btn.textContent = on ? "Stop" : "Analyze";
+  btn.classList.toggle("stop", on);
+}
+
+// Button click: stop if running, else start. Enter key (form submit) always (re)starts.
+function toggleSearch() { if (isRunning) cancelAnalyze(); else analyze(); }
+
+function cancelAnalyze() {
+  if (currentController) { currentController.abort(); currentController = null; }
+  stopLoader();
+  setRunning(false);
+  $("status").innerHTML = "✕ Search cancelled";
+}
+
 async function analyze() {
   const target = $("target").value.trim();
   if (!target) return;
-  const btn = $("analyzeBtn");
-  btn.disabled = true;
+  if (currentController) currentController.abort();   // supersede any in-flight search
+  const controller = new AbortController();
+  currentController = controller;
+  setRunning(true);
   startLoader(target);
   $("output").innerHTML = "";
 
@@ -90,26 +112,27 @@ async function analyze() {
   form.append("target", target);
 
   try {
-    const res = await fetch("/analyze", { method: "POST", body: form });
+    const res = await fetch("/analyze", { method: "POST", body: form, signal: controller.signal });
     const data = await res.json();
+    if (controller.signal.aborted) return;            // cancelled or superseded
     if (!data.ok) {
-      stopLoader();
+      stopLoader(); setRunning(false); currentController = null;
       $("output").innerHTML = '<div class="err">✗ ' + esc(data.error || "Analysis failed") + '</div>';
       $("status").innerHTML = "";
       return;
     }
     finishLoader();
     await new Promise(r => setTimeout(r, 220));
+    if (controller.signal.aborted) return;
     stopLoader();
     render(data);
     $("status").innerHTML = '✓ Triage complete · ' + esc(data.kind) + ' · ' + esc(data.domain);
+    setRunning(false); currentController = null;
   } catch (e) {
-    stopLoader();
+    if (e.name === "AbortError") return;              // cancel/supersede handled elsewhere
+    stopLoader(); setRunning(false); currentController = null;
     $("output").innerHTML = '<div class="err">✗ Network error</div>';
     $("status").innerHTML = "";
-  } finally {
-    stopLoader();
-    btn.disabled = false;
   }
 }
 
