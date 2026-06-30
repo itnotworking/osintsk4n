@@ -1,4 +1,14 @@
+/* JetBrains Mono (SIL OFL 1.1) — self-hosted, variable weight */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/static/fonts/jetbrains-mono.woff2?v=1") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --bg: #0c0c0e;
   --text: #e6e5ea;
   --muted: #8d8d97;
@@ -16,9 +26,15 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; min-height: 100%; }
 body {
-  background: var(--bg);
+  background-color: var(--bg);
+  /* faint dot-grid + a soft overhead lift for console-scope atmosphere */
+  background-image:
+    radial-gradient(ellipse 70% 55% at 50% -8%, rgba(154,163,230,0.06), transparent 70%),
+    radial-gradient(rgba(255,255,255,0.02) 1px, transparent 1px);
+  background-size: 100% 100%, 23px 23px;
+  background-attachment: fixed;
   color: var(--text);
-  font-family: ui-monospace, "JetBrains Mono", "SF Mono", "Menlo", "Consolas", monospace;
+  font-family: var(--mono);
   font-size: 14px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -57,7 +73,7 @@ header h1 { margin: 0; font-size: 16px; letter-spacing: .3px; font-weight: 600; 
 header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
 /* typographic wordmark (no icon, no rotation) */
 .wm {
-  font-family: ui-monospace, "JetBrains Mono", "SF Mono", "Consolas", monospace;
+  font-family: var(--mono);
   font-weight: 800; font-size: 21px; letter-spacing: 2px; color: var(--text);
   position: relative; padding-bottom: 4px; line-height: 1;
 }
@@ -93,13 +109,20 @@ header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
 /* search */
 .search {
   display: flex;
+  position: relative;
   border-bottom: 1px solid var(--line);
   background: transparent;
   margin: 56px auto 10px;
   max-width: 680px;
   transition: border-color .2s;
 }
-.search:focus-within { border-color: var(--accent); }
+/* refined focus: an accent underline that draws in from the left */
+.search::after {
+  content: ""; position: absolute; left: 0; bottom: -1px; height: 2px; width: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transform: scaleX(0); transform-origin: left; transition: transform .35s cubic-bezier(.4,0,.2,1);
+}
+.search:focus-within::after { transform: scaleX(1); }
 .search input {
   flex: 1; padding: 12px 4px; background: transparent; border: none;
   outline: none; color: var(--text); font-family: inherit; font-size: 15px;
@@ -144,7 +167,12 @@ header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
   width: 58px; height: 58px; border-radius: 50%; flex: 0 0 auto;
   display: grid; place-items: center; font-size: 16px; font-weight: 700;
   background: conic-gradient(var(--ring) calc(var(--pct) * 1%), rgba(255,255,255,0.07) 0);
+  animation: ringFill .95s cubic-bezier(.22,1,.36,1) both;
 }
+/* registered custom property lets the conic-gradient animate its fill on reveal */
+@property --pct { syntax: "<number>"; initial-value: 0; inherits: false; }
+@keyframes ringFill { from { --pct: 0; } }
+@media (prefers-reduced-motion: reduce) { .verdict .score-ring { animation: none; } }
 .verdict .score-ring i { width: 46px; height: 46px; border-radius: 50%; background: var(--bg); display: grid; place-items: center; font-style: normal; }
 .verdict .v-main { flex: 1; min-width: 220px; }
 .verdict .v-main .label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 2px; color: var(--faint); }
