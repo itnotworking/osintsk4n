@@ -207,6 +207,28 @@ def parse_target(raw):
         result["error"] = "Illegal control characters in input."
         return result
 
+    # CIDR range? (e.g. 185.220.101.0/24) — must be checked before URL parsing (both use "/")
+    if re.match(r"^[0-9a-fA-F:.]+/\d{1,3}$", value):
+        try:
+            net = ipaddress.ip_network(value, strict=False)
+        except ValueError:
+            net = None
+        if net is not None:
+            if net.num_addresses > 256:
+                result["error"] = (
+                    f"CIDR range too large: /{net.prefixlen} covers {net.num_addresses:,} "
+                    f"addresses. Maximum is 256 (IPv4 /24 or smaller, IPv6 /120 or smaller)."
+                )
+                return result
+            result.update({
+                "ok": True, "kind": "cidr", "normalized": str(net),
+                "domain": str(net.network_address), "registrable": str(net.network_address),
+                "url": None, "email": None, "local_part": None,
+                "cidr": str(net), "network_addr": str(net.network_address),
+                "subdomain": False, "is_ip": False,
+            })
+            return result
+
     kind = None
     domain = None
     url = None
@@ -359,6 +381,37 @@ def abuseipdb(ip, verbose=False):
         data["top_categories"] = [ABUSE_CATEGORIES.get(c, f"cat{c}") for c, _ in top]
         data.pop("reports", None)   # drop the bulky raw array; we keep the summary
     return data
+
+
+def abuseipdb_block(cidr):
+    """AbuseIPDB /check-block — aggregate abuse across a network range (up to /24)."""
+    if not cidr or not ABUSEIPDB_API_KEY:
+        return None
+    res = safe_get(
+        "https://api.abuseipdb.com/api/v2/check-block",
+        headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
+        params={"network": cidr, "maxAgeInDays": 90},
+        timeout=15,
+    )
+    data = res.get("data") if res else None
+    if not data:
+        return None
+    reported = data.get("reportedAddress") or []
+    reported.sort(key=lambda x: x.get("abuseConfidenceScore", 0), reverse=True)
+    return {
+        "network": data.get("networkAddress"),
+        "netmask": data.get("netmask"),
+        "min": data.get("minAddress"),
+        "max": data.get("maxAddress"),
+        "num_hosts": data.get("numPossibleHosts"),
+        "space_desc": data.get("addressSpaceDesc"),
+        "reported_count": len(reported),
+        "reported": [{
+            "ip": r.get("ipAddress"), "score": r.get("abuseConfidenceScore", 0),
+            "reports": r.get("numReports", 0), "last": (r.get("mostRecentReport") or "")[:10],
+            "cc": r.get("countryCode"),
+        } for r in reported[:40]],
+    }
 
 
 def check_vt_ip(ip):
@@ -1221,8 +1274,35 @@ def score_ip(result):
     return {"score": pts, "verdict": verdict, "reasons": reasons, "bec": []}
 
 
+def score_cidr(result):
+    """Network-block scoring — share of the range reported for abuse + severity."""
+    pts, reasons = 0, []
+    block = result.get("block")
+    if block:
+        rc = block.get("reported_count", 0)
+        hosts = block.get("num_hosts") or 256
+        pct = (rc / hosts * 100) if hosts else 0
+        high = [r for r in (block.get("reported") or []) if r.get("score", 0) >= 50]
+        if rc:
+            reasons.append(f"{rc} of {hosts} addresses reported for abuse ({pct:.0f}% of the block)")
+            if high:
+                reasons.append(f"{len(high)} address(es) at 50+ abuse confidence")
+            if len(high) >= 5 or pct >= 25:
+                pts += 45
+            elif len(high) >= 1 or pct >= 8:
+                pts += 24
+            else:
+                pts += 8
+        else:
+            reasons.append("No addresses in this block have recent abuse reports")
+    pts, verdict = _verdict_from(pts)
+    return {"score": pts, "verdict": verdict, "reasons": reasons, "bec": []}
+
+
 def score(result):
     """Weighted risk scoring → verdict + reasons + BEC tags."""
+    if result.get("kind") == "cidr":
+        return score_cidr(result)
     if result.get("is_ip"):
         return score_ip(result)
     pts = 0
@@ -1409,12 +1489,34 @@ def analyze(raw_input):
     is_ip = parsed.get("is_ip", False)
     ip = domain if is_ip else resolve_ip(domain)
 
-    result = _analyze_ip(parsed, ip, raw_input) if is_ip \
-        else _analyze_domain(parsed, domain, ip, raw_input)
+    if parsed["kind"] == "cidr":
+        result = _analyze_cidr(parsed, raw_input)
+    elif is_ip:
+        result = _analyze_ip(parsed, ip, raw_input)
+    else:
+        result = _analyze_domain(parsed, domain, ip, raw_input)
 
     result.update(score(result))
     result["ticket_summary"] = build_summary(result)
     return result
+
+
+def _analyze_cidr(parsed, raw_input):
+    """Network-block path — aggregate abuse (AbuseIPDB check-block) + RDAP allocation."""
+    cidr = parsed["cidr"]
+    net_addr = parsed["network_addr"]
+    futures = {
+        "block":   _executor.submit(abuseipdb_block, cidr),
+        "rdap_ip": _executor.submit(rdap_ip, net_addr),
+    }
+    res = {k: f.result() for k, f in futures.items()}
+    return {
+        "ok": True, "kind": "cidr", "input": raw_input,
+        "domain": cidr, "registrable": cidr, "ip": None, "is_ip": False,
+        "cidr": cidr, "email": None, "url": None,
+        "defanged": defang(cidr),
+        "block": res["block"], "rdap_ip": res["rdap_ip"],
+    }
 
 
 def _analyze_ip(parsed, ip, raw_input):
@@ -1531,6 +1633,8 @@ def _analyze_domain(parsed, domain, ip, raw_input):
 
 def build_summary(r):
     """Analyst-ready, copy-paste block (defanged) for case notes."""
+    if r.get("kind") == "cidr":
+        return build_cidr_summary(r)
     if r.get("is_ip"):
         return build_ip_summary(r)
     lines = []
@@ -1552,6 +1656,25 @@ def build_summary(r):
                  f"  |  DKIM: {', '.join(r['dkim']) if r.get('dkim') else 'none found'}")
     if r.get("bec"):
         lines.append("BEC flags: " + "; ".join(r["bec"]))
+    if r.get("reasons"):
+        lines.append("Signals:  " + " | ".join(r["reasons"]))
+    return "\n".join(lines)
+
+
+def build_cidr_summary(r):
+    lines = []
+    b = r.get("block") or {}
+    rip = r.get("rdap_ip") or {}
+    lines.append(f"IOC:      {r['defanged']}  (network block)")
+    lines.append(f"Verdict:  {r['verdict']}  (risk {r['score']}/100)")
+    if b:
+        lines.append(f"Block:    {b.get('min','?')} – {b.get('max','?')}  ·  {b.get('num_hosts','?')} hosts")
+        if b.get("space_desc"):
+            lines.append(f"Space:    {b['space_desc']}")
+        lines.append(f"Abuse:    {b.get('reported_count',0)} reported address(es) in range")
+    if rip.get("name") or rip.get("org"):
+        lines.append(f"Owner:    {rip.get('name') or rip.get('org')}"
+                     + (f"  ·  abuse: {rip['abuse_contact']}" if rip.get("abuse_contact") else ""))
     if r.get("reasons"):
         lines.append("Signals:  " + " | ".join(r["reasons"]))
     return "\n".join(lines)

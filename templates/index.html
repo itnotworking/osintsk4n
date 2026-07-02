@@ -27,7 +27,7 @@
 
 <div class="wrap">
   <form class="search" onsubmit="event.preventDefault(); analyze();">
-    <input id="target" placeholder="domain, IP, URL, or email — defanged is fine (hxxp://evil[.]com)" autocomplete="off" autofocus>
+    <input id="target" placeholder="domain, IP, CIDR, URL, or email — defanged is fine (hxxp://evil[.]com)" autocomplete="off" autofocus>
     <button id="analyzeBtn" type="button" onclick="toggleSearch()">Analyze</button>
   </form>
   <p class="hint">
@@ -190,7 +190,7 @@ function buildBrief(d) {
     "Likely Malicious": "likely malicious", "Suspicious": "suspicious",
     "Low–Moderate": "low-to-moderate risk", "Likely Legitimate": "likely legitimate"
   })[d.verdict] || d.verdict.toLowerCase();
-  const kind = d.kind === "email" ? "email domain" : (d.kind === "url" ? "URL" : (d.kind === "ip" ? "IP address" : "domain"));
+  const kind = d.kind === "email" ? "email domain" : (d.kind === "url" ? "URL" : (d.kind === "ip" ? "IP address" : (d.kind === "cidr" ? "network block" : "domain")));
   let s = "This " + kind + " (" + d.defanged + ") is assessed as " + plain +
     " with a risk score of " + d.score + "/100. ";
   const pts = stakeholderPoints(d);
@@ -204,6 +204,7 @@ function pill(label, on) {
 
 function cards(d) {
   if (d.kind === "ip") return ipCards(d);
+  if (d.kind === "cidr") return cidrCards(d);
   const out = [];
 
   // Email authentication posture — the BEC card
@@ -272,6 +273,41 @@ function cards(d) {
     out.push(card("Subdomains (crt.sh)", crtBlock(d.crtsh)));
 
   return '<div class="grid">' + out.join("") + '</div>' + urlscanSection(d) + buildTicket(d);
+}
+
+/* ---------- CIDR / network-block layout ---------- */
+function cidrCards(d) {
+  const out = [];
+  const b = d.block || {}, rip = d.rdap_ip || {};
+
+  out.push(card("Network Block",
+    kvrow("CIDR", d.cidr) +
+    kvrow("Range", b.min ? (b.min + " – " + b.max) : "?") +
+    kvrow("Hosts", b.num_hosts != null ? b.num_hosts : "?") +
+    (b.space_desc ? kvrow("Address space", b.space_desc) : "") +
+    kvrow("Allocation", rip.name ? (rip.name + (rip.cidr ? "  " + rip.cidr : "")) : "?") +
+    (rip.org ? kvrow("Org", rip.org) : "") +
+    kvrow("Country", rip.country || "?") +
+    (rip.abuse_contact ? kvrow("Abuse contact", rip.abuse_contact) : "")
+  ));
+
+  out.push(card("Block Abuse (AbuseIPDB)", cidrAbuseBlock(b, d.block)));
+
+  return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
+}
+
+function cidrAbuseBlock(b, present) {
+  if (!present) return '<pre class="muted">No AbuseIPDB block data (set ABUSEIPDB_API_KEY, or plan may not allow /check-block)</pre>';
+  const rc = b.reported_count || 0, hosts = b.num_hosts || 256;
+  const pct = hosts ? Math.round(rc / hosts * 100) : 0;
+  let html = kvrow("Reported addresses", rc + " of " + hosts + "  (" + pct + "%)", rc ? (pct>=8?"bad":"warn") : "good");
+  if (!rc) return html + '<div class="muted" style="font-size:11px;margin-top:6px">No addresses in this block have recent abuse reports.</div>';
+  html += '<div class="muted" style="font-size:11px;margin:10px 0 4px">Reported addresses (worst first):</div>';
+  html += '<div class="subs">' + (b.reported || []).map(r =>
+    '<div><span class="' + (r.score>=50?"v bad":(r.score>=25?"v warn":"muted")) + '">' + esc(r.ip) + '</span>' +
+    ' <span class="muted">· ' + r.score + '/100 · ' + (r.reports||0) + ' reports' + (r.cc ? ' · ' + esc(r.cc) : '') + (r.last ? ' · ' + esc(r.last) : '') + '</span></div>'
+  ).join("") + '</div>';
+  return html;
 }
 
 /* ---------- IP-address layout ---------- */
@@ -631,6 +667,12 @@ function selectTicket(fmt) {
 }
 
 function recAction(d) {
+  if (d.kind === "cidr") return ({
+    "Likely Malicious": "Consider blocking or closely monitoring this range at the firewall; investigate the worst offenders individually and check logs for connections from the block.",
+    "Suspicious": "Monitor the range; review the reported addresses and correlate with recent alerts before any block.",
+    "Low–Moderate": "Low block-level risk; note the reported addresses and continue monitoring.",
+    "Likely Legitimate": "No block-level action required; the range shows no significant abuse."
+  })[d.verdict] || "Review manually.";
   if (d.kind === "ip") return ({
     "Likely Malicious": "Block the IP at the firewall/EDR (CrowdStrike Falcon); hunt for existing connections to it in proxy/firewall logs; check for beaconing.",
     "Suspicious": "Monitor and rate-limit; correlate with recent alerts; consider a temporary block pending review.",
@@ -651,8 +693,32 @@ function authLine(d) {
     ", DKIM " + (d.dkim && d.dkim.length ? "present" : "none found");
 }
 
+function fmtSecurityCIDR(d) {
+  const b = d.block || {}, rip = d.rdap_ip || {};
+  const L = [];
+  L.push("SECURITY TEAM — NETWORK BLOCK REPORT");
+  L.push("");
+  L.push("IOC:      " + d.defanged + "  (network block)");
+  L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  if (b.min) L.push("Range:    " + b.min + " – " + b.max + "  ·  " + (b.num_hosts || "?") + " hosts");
+  if (b.space_desc) L.push("Space:    " + b.space_desc);
+  if (rip.name || rip.org) L.push("Owner:    " + (rip.name || rip.org) + (rip.abuse_contact ? "  ·  abuse: " + rip.abuse_contact : ""));
+  L.push("Abuse:    " + (b.reported_count || 0) + " reported address(es) in range");
+  if (d.reasons && d.reasons.length) L.push("Signals:  " + d.reasons.join(" | "));
+  const worst = (b.reported || []).slice(0, 8);
+  if (worst.length) {
+    L.push("");
+    L.push("Worst offenders:");
+    worst.forEach(r => L.push("  " + r.ip + "  " + r.score + "/100  (" + (r.reports || 0) + " reports" + (r.cc ? ", " + r.cc : "") + ")"));
+  }
+  L.push("");
+  L.push("Recommended action: " + recAction(d));
+  return L.join("\n");
+}
+
 // Security Team — full technical report for analysts/SOC.
 function fmtSecurity(d) {
+  if (d.kind === "cidr") return fmtSecurityCIDR(d);
   if (d.kind === "ip") return fmtSecurityIP(d);
   const i = d.info || {};
   const L = [];
@@ -704,8 +770,25 @@ function ipPoints(d) {
   return pts.slice(0, 5);
 }
 
+function cidrPoints(d) {
+  const b = d.block || {}, pts = [];
+  const rc = b.reported_count || 0, hosts = b.num_hosts || 256;
+  const pct = hosts ? Math.round(rc / hosts * 100) : 0;
+  if (rc) {
+    pts.push(rc + " of " + hosts + " addresses in this range (" + pct + "%) have recent abuse reports.");
+    const high = (b.reported || []).filter(r => r.score >= 50).length;
+    if (high) pts.push(high + " address(es) carry a high abuse-confidence score (50+).");
+  } else {
+    pts.push("No addresses in this range have recent abuse reports; the block looks clean.");
+  }
+  const rip = d.rdap_ip || {};
+  if (rip.name || rip.org) pts.push("The block is allocated to " + (rip.name || rip.org) + ".");
+  return pts.slice(0, 5);
+}
+
 function stakeholderPoints(d) {
   if (d.kind === "ip") return ipPoints(d);
+  if (d.kind === "cidr") return cidrPoints(d);
   const pts = [];
   // Known-bad / actor correlation first — strongest signals.
   if ((d.gsb && d.gsb.flagged) || (d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found))
@@ -742,7 +825,13 @@ function riskRating(d) {
 // Executive — C-suite risk brief: decision-oriented, minimal jargon.
 function fmtExecutive(d) {
   const ip = d.kind === "ip";
-  const bottom = (ip ? {
+  const cidr = d.kind === "cidr";
+  const bottom = (cidr ? {
+    "Likely Malicious": "This network range shows widespread abuse and should be treated as hostile; consider blocking or closely monitoring it.",
+    "Suspicious": "This range contains some abusive addresses and warrants caution and monitoring.",
+    "Low–Moderate": "This range carries limited risk. Routine monitoring is sufficient.",
+    "Likely Legitimate": "This range shows no significant abuse and appears to be normal infrastructure."
+  } : ip ? {
     "Likely Malicious": "This internet address is assessed as malicious and should be blocked. Traffic to or from it risks intrusion, data theft, or malware command-and-control.",
     "Suspicious": "This address shows warning signs and should be treated with caution pending a brief investigation.",
     "Low–Moderate": "This address carries limited risk. Normal monitoring is sufficient.",
@@ -753,7 +842,12 @@ function fmtExecutive(d) {
     "Low–Moderate": "This domain carries limited risk. Normal precautions and monitoring are sufficient.",
     "Likely Legitimate": "This domain appears legitimate and poses no significant risk to the organization at this time."
   })[d.verdict] || "Manual review required.";
-  const decision = (ip ? {
+  const decision = (cidr ? {
+    "Likely Malicious": "Consider a range block at the firewall and investigate the worst offenders.",
+    "Suspicious": "Approve monitoring of the range; review reported addresses before any block.",
+    "Low–Moderate": "No immediate action; continue routine monitoring.",
+    "Likely Legitimate": "No action required."
+  } : ip ? {
     "Likely Malicious": "Authorize blocking at the firewall/EDR and hunt for existing connections to it.",
     "Suspicious": "Approve monitoring and a short investigation; consider a temporary block.",
     "Low–Moderate": "No immediate action; continue routine monitoring.",
@@ -792,7 +886,12 @@ function fmtEndUser(d) {
     "Low–Moderate": "This is probably okay, but stay alert.",
     "Likely Legitimate": "✓ This looks SAFE."
   })[d.verdict] || "Unable to determine — check with IT Security.";
-  const plain = (d.kind === "ip" ? {
+  const plain = (d.kind === "cidr" ? {
+    "Likely Malicious": "This block of internet addresses shows widespread malicious activity.",
+    "Suspicious": "This block of addresses contains some suspicious activity.",
+    "Low–Moderate": "Nothing major stood out across this block of addresses.",
+    "Likely Legitimate": "This block of addresses looks normal."
+  } : d.kind === "ip" ? {
     "Likely Malicious": "This internet address is associated with malicious activity.",
     "Suspicious": "Some details about this address look off.",
     "Low–Moderate": "Nothing major stood out, but it's not clearly trusted either.",
