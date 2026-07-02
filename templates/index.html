@@ -291,9 +291,20 @@ function cidrCards(d) {
     (rip.abuse_contact ? kvrow("Abuse contact", rip.abuse_contact) : "")
   ));
 
+  out.push(card("Block Reputation", cidrRepBlock(d.drop)));
   out.push(card("Block Abuse (AbuseIPDB)", cidrAbuseBlock(b, d.block)));
 
   return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
+}
+
+function cidrRepBlock(drop) {
+  if (!drop) return '<pre class="muted">Spamhaus DROP list unavailable</pre>';
+  if (drop.listed) return kvrow("Spamhaus DROP", "LISTED — known criminal netblock", "bad") +
+    (drop.sblid ? kvrow("SBL ID", drop.sblid) : "") +
+    (drop.entry ? kvrow("List entry", drop.entry) : "") +
+    '<div class="muted" style="font-size:11px;margin-top:8px">On the Spamhaus DROP list = the block is controlled by threat actors. Traffic to/from it should be blocked.</div>';
+  return kvrow("Spamhaus DROP", "not listed", "good") +
+    '<div class="muted" style="font-size:11px;margin-top:8px">Not on the Spamhaus list of known criminal/hijacked netblocks.</div>';
 }
 
 function cidrAbuseBlock(b, present) {
@@ -702,6 +713,8 @@ function fmtSecurityCIDR(d) {
   L.push("");
   L.push("IOC:      " + d.defanged + "  (network block)");
   L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  if (d.drop && d.drop.listed) L.push("Spamhaus: DROP-LISTED — criminal netblock (" + (d.drop.sblid || "") + ")");
+  else if (d.drop) L.push("Spamhaus: not on DROP list");
   if (b.min) L.push("Range:    " + b.min + " – " + b.max + "  ·  " + (b.num_hosts || "?") + " hosts");
   if (b.space_desc) L.push("Space:    " + b.space_desc);
   if (rip.name || rip.org) L.push("Owner:    " + (rip.name || rip.org) + (rip.abuse_contact ? "  ·  abuse: " + rip.abuse_contact : ""));
@@ -774,6 +787,7 @@ function ipPoints(d) {
 
 function cidrPoints(d) {
   const b = d.block || {}, pts = [];
+  if (d.drop && d.drop.listed) pts.push("This range is on the Spamhaus DROP list — it is a netblock known to be controlled by criminals, and traffic to/from it should be blocked.");
   const rc = b.reported_count || 0, hosts = b.num_hosts || 256;
   const pct = hosts ? Math.round(rc / hosts * 100) : 0;
   if (rc) {

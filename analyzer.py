@@ -9,6 +9,7 @@ Pure stdlib + requests so it cold-starts cleanly on Render's free tier.
 
 import os
 import re
+import json
 import html
 import time
 import socket
@@ -381,6 +382,53 @@ def abuseipdb(ip, verbose=False):
         data["top_categories"] = [ABUSE_CATEGORIES.get(c, f"cat{c}") for c, _ in top]
         data.pop("reports", None)   # drop the bulky raw array; we keep the summary
     return data
+
+
+_drop_cache = {"ts": 0.0, "nets": []}
+
+
+def _spamhaus_drop_nets():
+    """Spamhaus DROP + EDROP — netblocks known to be controlled by criminals (free). Cached 6h."""
+    now = time.time()
+    if _drop_cache["nets"] and (now - _drop_cache["ts"] < 21600):
+        return _drop_cache["nets"]
+    nets = []
+    try:
+        r = requests.get("https://www.spamhaus.org/drop/drop_v4.json",
+                         headers={"User-Agent": USER_AGENT}, timeout=12)
+        if r.status_code == 200:
+            for line in r.text.splitlines():
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    obj = json.loads(line)
+                    c = obj.get("cidr")
+                    if c:
+                        nets.append((ipaddress.ip_network(c, strict=False), obj.get("sblid")))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if nets:
+        _drop_cache["nets"] = nets
+        _drop_cache["ts"] = now
+    return nets or _drop_cache["nets"]
+
+
+def spamhaus_drop_check(cidr):
+    """Is this range on the Spamhaus DROP list (known criminal/hijacked netblock)?"""
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except Exception:
+        return None
+    nets = _spamhaus_drop_nets()
+    if not nets:
+        return None
+    for d, sbl in nets:
+        if net.version == d.version and net.overlaps(d):
+            return {"listed": True, "entry": str(d), "sblid": sbl}
+    return {"listed": False}
 
 
 def abuseipdb_block(cidr):
@@ -1289,8 +1337,12 @@ def score_ip(result):
 
 
 def score_cidr(result):
-    """Network-block scoring — share of the range reported for abuse + severity."""
+    """Network-block scoring — Spamhaus DROP membership + share of range reported."""
     pts, reasons = 0, []
+    drop = result.get("drop")
+    if drop and drop.get("listed"):
+        pts += 65
+        reasons.append(f"Listed on Spamhaus DROP — known criminal/hijacked netblock ({drop.get('sblid')})")
     block = result.get("block")
     if block and not block.get("error"):
         rc = block.get("reported_count", 0)
@@ -1522,6 +1574,7 @@ def _analyze_cidr(parsed, raw_input):
     futures = {
         "block":   _executor.submit(abuseipdb_block, cidr),
         "rdap_ip": _executor.submit(rdap_ip, net_addr),
+        "drop":    _executor.submit(spamhaus_drop_check, cidr),
     }
     res = {k: f.result() for k, f in futures.items()}
     return {
@@ -1529,7 +1582,7 @@ def _analyze_cidr(parsed, raw_input):
         "domain": cidr, "registrable": cidr, "ip": None, "is_ip": False,
         "cidr": cidr, "email": None, "url": None,
         "defanged": defang(cidr),
-        "block": res["block"], "rdap_ip": res["rdap_ip"],
+        "block": res["block"], "rdap_ip": res["rdap_ip"], "drop": res["drop"],
     }
 
 
@@ -1681,7 +1734,12 @@ def build_cidr_summary(r):
     rip = r.get("rdap_ip") or {}
     lines.append(f"IOC:      {r['defanged']}  (network block)")
     lines.append(f"Verdict:  {r['verdict']}  (risk {r['score']}/100)")
-    if b:
+    drop = r.get("drop") or {}
+    if drop.get("listed"):
+        lines.append(f"Spamhaus: DROP-LISTED (criminal netblock, {drop.get('sblid')})")
+    elif drop:
+        lines.append("Spamhaus: not on DROP list")
+    if b and not b.get("error"):
         lines.append(f"Block:    {b.get('min','?')} – {b.get('max','?')}  ·  {b.get('num_hosts','?')} hosts")
         if b.get("space_desc"):
             lines.append(f"Space:    {b['space_desc']}")
