@@ -27,14 +27,15 @@
 
 <div class="wrap">
   <form class="search" onsubmit="event.preventDefault(); analyze();">
-    <input id="target" placeholder="domain, IP, CIDR, URL, or email — defanged is fine (hxxp://evil[.]com)" autocomplete="off" autofocus>
+    <input id="target" placeholder="domain, IP, CIDR, URL, email, or file hash — defanged is fine" autocomplete="off" autofocus>
     <button id="analyzeBtn" type="button" onclick="toggleSearch()">Analyze</button>
   </form>
   <p class="hint">
-    Accepts <code>example.com</code>, <code>https://x.com/path</code>, <code>user@example.com</code>.
+    Accepts <code>example.com</code>, <code>1.2.3.4</code>, <code>user@example.com</code>, a <code>file hash</code>, or <code>CIDR</code>.
     Refangs <code>hxxp</code>, <code>[.]</code>, <code>[at]</code> automatically.
   </p>
 
+  <div id="recent" class="recent"></div>
   <div id="status" class="status"></div>
   <div id="output"></div>
 </div>
@@ -141,6 +142,7 @@ function render(d) {
   current = d;
   $("output").innerHTML = verdictBanner(d) + cards(d);
   lockTicketHeight();
+  saveRecent(d);
 }
 
 // Pin the ticket box to its tallest format so tab switching never reflows the page.
@@ -190,7 +192,7 @@ function buildBrief(d) {
     "Likely Malicious": "likely malicious", "Suspicious": "suspicious",
     "Low–Moderate": "low-to-moderate risk", "Likely Legitimate": "likely legitimate"
   })[d.verdict] || d.verdict.toLowerCase();
-  const kind = d.kind === "email" ? "email domain" : (d.kind === "url" ? "URL" : (d.kind === "ip" ? "IP address" : (d.kind === "cidr" ? "network block" : "domain")));
+  const kind = d.kind === "email" ? "email domain" : (d.kind === "url" ? "URL" : (d.kind === "ip" ? "IP address" : (d.kind === "cidr" ? "network block" : (d.kind === "hash" ? "file" : "domain"))));
   let s = "This " + kind + " (" + d.defanged + ") is assessed as " + plain +
     " with a risk score of " + d.score + "/100. ";
   const pts = stakeholderPoints(d);
@@ -209,6 +211,7 @@ function muted(msg) { return '<pre class="muted">' + esc(msg) + '</pre>'; }
 function cards(d) {
   if (d.kind === "ip") return ipCards(d);
   if (d.kind === "cidr") return cidrCards(d);
+  if (d.kind === "hash") return hashCards(d);
   const out = [];
 
   // Email authentication posture — the BEC card
@@ -277,6 +280,63 @@ function cards(d) {
     out.push(card("Subdomains (crt.sh)", crtBlock(d.crtsh)));
 
   return '<div class="grid">' + out.join("") + '</div>' + urlscanSection(d) + buildTicket(d);
+}
+
+/* ---------- File-hash layout ---------- */
+function hashCards(d) {
+  const out = [];
+  out.push(card("File Analysis (VirusTotal)", vtFileBlock(d.vt_file, d)));
+  out.push(card("MalwareBazaar", mbBlock(d.mb)));
+  out.push(card("Threat Feeds", hashThreatBlock(d)));
+  out.push(card("Hash", hashIdsBlock(d)));
+  return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
+}
+
+function vtFileBlock(v, d) {
+  if (!v) return muted(keyOn('vt') ? 'VirusTotal returned no data.' : 'Set VT_API_KEY to enable VirusTotal.');
+  if (!v.found) return kvrow("VirusTotal", "file not found (unknown sample)", "") +
+    '<div class="muted" style="font-size:11px;margin-top:6px">This hash isn\'t in VirusTotal — it may be a new/unseen file, or benign. Absence isn\'t proof of safety.</div>';
+  const s = v.last_analysis_stats || {};
+  const total = Object.values(s).reduce((a, b) => a + b, 0) || 0;
+  return kvrow("Detections", (s.malicious || 0) + " / " + total + " engines", (s.malicious > 0 ? "bad" : "good"), "How many antivirus engines flagged this file as malicious, out of all that scanned it.") +
+    (v.family ? kvrow("Malware family", v.family, "bad", "The malware family/label most engines agree on.") : "") +
+    (v.categories && v.categories.length ? kvrow("Categories", v.categories.join(", ")) : "") +
+    kvrow("File type", v.type || "?") +
+    (v.size ? kvrow("Size", v.size.toLocaleString() + " bytes") : "") +
+    (v.meaningful_name ? kvrow("Name", v.meaningful_name) : "") +
+    (v.first_seen ? kvrow("First seen", v.first_seen, "", "When this file was first submitted to VirusTotal.") : "") +
+    (v.times_submitted ? kvrow("Times submitted", v.times_submitted) : "") +
+    (v.tags && v.tags.length ? kvrow("Tags", v.tags.slice(0, 8).join(", ")) : "");
+}
+
+function mbBlock(m) {
+  if (!m) return muted(keyOn('abusech') ? 'MalwareBazaar returned no data.' : 'Set ABUSECH_API_KEY to enable MalwareBazaar.');
+  if (!m.found) return kvrow("MalwareBazaar", "not a known sample", "good") +
+    '<div class="muted" style="font-size:11px;margin-top:6px">This hash isn\'t in abuse.ch\'s malware sample database.</div>';
+  return kvrow("Status", "KNOWN MALWARE SAMPLE", "bad") +
+    (m.signature ? kvrow("Family", m.signature, "bad") : "") +
+    (m.file_type ? kvrow("File type", m.file_type) : "") +
+    (m.delivery_method ? kvrow("Delivery", m.delivery_method, "", "How this malware is typically delivered (e.g. email attachment, web download).") : "") +
+    (m.tags && m.tags.length ? kvrow("Tags", m.tags.join(", ")) : "") +
+    (m.first_seen ? kvrow("First seen", m.first_seen) : "") +
+    (m.file_name ? kvrow("Filename", m.file_name) : "");
+}
+
+function hashThreatBlock(d) {
+  const tf = d.threatfox;
+  let html = "";
+  if (!tf) html += kvrow("ThreatFox", keyOn('abusech') ? "unavailable" : "set ABUSECH_API_KEY", "");
+  else if (tf.found) html += kvrow("ThreatFox", "KNOWN IOC" + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), "bad");
+  else html += kvrow("ThreatFox", "no known-malware match", "good");
+  return html;
+}
+
+function hashIdsBlock(d) {
+  const v = d.vt_file || {};
+  return kvrow("Queried", d.hash_type || "hash") +
+    (v.md5 ? kvrow("MD5", v.md5) : (d.hash_type === "MD5" ? kvrow("MD5", d.hash) : "")) +
+    (v.sha1 ? kvrow("SHA1", v.sha1) : (d.hash_type === "SHA1" ? kvrow("SHA1", d.hash) : "")) +
+    (v.sha256 ? kvrow("SHA256", v.sha256) : (d.hash_type === "SHA256" ? kvrow("SHA256", d.hash) : ""));
 }
 
 /* ---------- CIDR / network-block layout ---------- */
@@ -693,6 +753,12 @@ function selectTicket(fmt) {
 }
 
 function recAction(d) {
+  if (d.kind === "hash") return ({
+    "Likely Malicious": "Block this hash in EDR (CrowdStrike Falcon); hunt for the file across endpoints; quarantine/purge any email carrying it (Mimecast).",
+    "Suspicious": "Detonate in a sandbox and monitor; block pending analysis if it arrived via email.",
+    "Low–Moderate": "Low confidence; note the hash and monitor. Unknown-to-VT files may warrant sandboxing.",
+    "Likely Legitimate": "No action required; the file is not flagged as malicious."
+  })[d.verdict] || "Review manually.";
   if (d.kind === "cidr") return ({
     "Likely Malicious": "Consider blocking or closely monitoring this range at the firewall; investigate the worst offenders individually and check logs for connections from the block.",
     "Suspicious": "Monitor the range; review the reported addresses and correlate with recent alerts before any block.",
@@ -744,8 +810,31 @@ function fmtSecurityCIDR(d) {
   return L.join("\n");
 }
 
+function fmtSecurityHash(d) {
+  const v = d.vt_file || {}, mb = d.mb || {};
+  const L = [];
+  L.push("SECURITY TEAM — FILE HASH REPORT");
+  L.push("");
+  L.push("IOC:      " + d.hash + "  (" + (d.hash_type || "hash") + ")");
+  L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  if (v.found) {
+    const s = v.last_analysis_stats || {}, total = Object.values(s).reduce((a, b) => a + b, 0) || 0;
+    L.push("VirusTotal: " + (s.malicious || 0) + "/" + total + " engines malicious" + (v.family ? "  ·  " + v.family : ""));
+    if (v.type) L.push("File:     " + v.type + (v.size ? "  ·  " + v.size + " bytes" : "") + (v.meaningful_name ? '  ·  "' + v.meaningful_name + '"' : ""));
+    if (v.first_seen) L.push("First seen: " + v.first_seen);
+  } else if (v && v.found === false) {
+    L.push("VirusTotal: not found (unknown sample)");
+  }
+  if (mb.found) L.push("MalwareBazaar: KNOWN SAMPLE" + (mb.signature ? "  ·  " + mb.signature : "") + (mb.delivery_method ? "  ·  delivery: " + mb.delivery_method : ""));
+  if (d.reasons && d.reasons.length) L.push("Signals:  " + d.reasons.join(" | "));
+  L.push("");
+  L.push("Recommended action: " + recAction(d));
+  return L.join("\n");
+}
+
 // Security Team — full technical report for analysts/SOC.
 function fmtSecurity(d) {
+  if (d.kind === "hash") return fmtSecurityHash(d);
   if (d.kind === "cidr") return fmtSecurityCIDR(d);
   if (d.kind === "ip") return fmtSecurityIP(d);
   const i = d.info || {};
@@ -815,9 +904,25 @@ function cidrPoints(d) {
   return pts.slice(0, 5);
 }
 
+function hashPoints(d) {
+  const v = d.vt_file || {}, mb = d.mb || {}, pts = [];
+  if (v.found) {
+    const mal = (v.last_analysis_stats || {}).malicious || 0;
+    if (mal > 0) pts.push(mal + " antivirus engines detect this file as malicious" + (v.family ? " (" + v.family + ")" : "") + ".");
+    else pts.push("No antivirus engines flag this file; it appears clean.");
+  } else if (v && v.found === false) {
+    pts.push("This file is not known to VirusTotal — it may be new/unseen, so absence of detections is not proof it is safe.");
+  }
+  if (mb.found) pts.push("It is a confirmed malware sample in abuse.ch's MalwareBazaar" + (mb.signature ? " (" + mb.signature + ")" : "") + ".");
+  if (d.threatfox && d.threatfox.found) pts.push("It matches a known malicious indicator in ThreatFox.");
+  if (!pts.length) pts.push("No malware databases flag this file.");
+  return pts.slice(0, 5);
+}
+
 function stakeholderPoints(d) {
   if (d.kind === "ip") return ipPoints(d);
   if (d.kind === "cidr") return cidrPoints(d);
+  if (d.kind === "hash") return hashPoints(d);
   const pts = [];
   // Known-bad / actor correlation first — strongest signals.
   if ((d.gsb && d.gsb.flagged) || (d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found))
@@ -855,7 +960,13 @@ function riskRating(d) {
 function fmtExecutive(d) {
   const ip = d.kind === "ip";
   const cidr = d.kind === "cidr";
-  const bottom = (cidr ? {
+  const hash = d.kind === "hash";
+  const bottom = (hash ? {
+    "Likely Malicious": "This file is identified as malware and should be blocked and removed from any system it reached.",
+    "Suspicious": "This file shows suspicious characteristics and should be contained and analyzed before use.",
+    "Low–Moderate": "This file carries limited risk but is not clearly trusted; handle with caution.",
+    "Likely Legitimate": "This file is not flagged as malicious by security tooling."
+  } : cidr ? {
     "Likely Malicious": "This network range shows widespread abuse and should be treated as hostile; consider blocking or closely monitoring it.",
     "Suspicious": "This range contains some abusive addresses and warrants caution and monitoring.",
     "Low–Moderate": "This range carries limited risk. Routine monitoring is sufficient.",
@@ -871,7 +982,12 @@ function fmtExecutive(d) {
     "Low–Moderate": "This domain carries limited risk. Normal precautions and monitoring are sufficient.",
     "Likely Legitimate": "This domain appears legitimate and poses no significant risk to the organization at this time."
   })[d.verdict] || "Manual review required.";
-  const decision = (cidr ? {
+  const decision = (hash ? {
+    "Likely Malicious": "Authorize blocking the hash in EDR and purging any email carrying the file.",
+    "Suspicious": "Approve sandbox analysis and containment before the file is used.",
+    "Low–Moderate": "No immediate action; monitor and sandbox if warranted.",
+    "Likely Legitimate": "No action required."
+  } : cidr ? {
     "Likely Malicious": "Consider a range block at the firewall and investigate the worst offenders.",
     "Suspicious": "Approve monitoring of the range; review reported addresses before any block.",
     "Low–Moderate": "No immediate action; continue routine monitoring.",
@@ -915,7 +1031,12 @@ function fmtEndUser(d) {
     "Low–Moderate": "This is probably okay, but stay alert.",
     "Likely Legitimate": "✓ This looks SAFE."
   })[d.verdict] || "Unable to determine — check with IT Security.";
-  const plain = (d.kind === "cidr" ? {
+  const plain = (d.kind === "hash" ? {
+    "Likely Malicious": "This file is identified as malware.",
+    "Suspicious": "This file has some suspicious characteristics.",
+    "Low–Moderate": "Nothing major stood out, but this file isn't clearly trusted.",
+    "Likely Legitimate": "This file is not flagged as malicious."
+  } : d.kind === "cidr" ? {
     "Likely Malicious": "This block of internet addresses shows widespread malicious activity.",
     "Suspicious": "This block of addresses contains some suspicious activity.",
     "Low–Moderate": "Nothing major stood out across this block of addresses.",
@@ -1037,6 +1158,36 @@ async function loadTicker() {
 }
 loadTicker();
 setInterval(loadTicker, 1800000);        // refresh every 30 min (matches server cache)
+
+/* ---------- recent searches (browser-local, per analyst) ---------- */
+const RECENT_KEY = "sc4n_recent";
+function getRecent() {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY)) || []; } catch (e) { return []; }
+}
+function saveRecent(d) {
+  if (!d || !d.ok) return;
+  let list = getRecent().filter(r => r.t !== d.input);
+  list.unshift({ t: d.input, label: d.defanged || d.input, k: d.kind, v: d.verdict, s: d.score });
+  list = list.slice(0, 12);
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch (e) {}
+  renderRecent();
+}
+function renderRecent() {
+  const el = $("recent");
+  if (!el) return;
+  const list = getRecent();
+  if (!list.length) { el.innerHTML = ""; return; }
+  const chips = list.map(function (r) {
+    const col = ({ "low": "#57b083", "lowmod": "#d4a24a", "suspicious": "#d4a24a", "malicious": "#e96a6a" })[verdictClass(r.v)] || "#8d8d97";
+    return '<span class="rchip" title="' + esc(r.v) + ' · ' + r.s + '/100" onclick="runRecent(' + JSON.stringify(r.t).replace(/"/g, "&quot;") + ')">' +
+      '<span class="rdot" style="background:' + col + '"></span>' +
+      '<span class="rt">' + esc((r.label || r.t).slice(0, 34)) + '</span></span>';
+  }).join("");
+  el.innerHTML = '<span class="rlabel">Recent</span>' + chips + '<span class="rclear" onclick="clearRecent()">clear</span>';
+}
+function runRecent(t) { $("target").value = t; analyze(); }
+function clearRecent() { try { localStorage.removeItem(RECENT_KEY); } catch (e) {} renderRecent(); }
+renderRecent();
 </script>
 
 </body>

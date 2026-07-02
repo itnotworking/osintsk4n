@@ -208,6 +208,18 @@ def parse_target(raw):
         result["error"] = "Illegal control characters in input."
         return result
 
+    # File hash? (MD5 / SHA1 / SHA256) — bare hex, must be checked before domain validation
+    if re.fullmatch(r"[a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64}", value):
+        htype = {32: "MD5", 40: "SHA1", 64: "SHA256"}[len(value)]
+        h = value.lower()
+        result.update({
+            "ok": True, "kind": "hash", "normalized": h,
+            "domain": h, "registrable": h, "url": None, "email": None,
+            "local_part": None, "hash": h, "hash_type": htype,
+            "subdomain": False, "is_ip": False,
+        })
+        return result
+
     # CIDR range? (e.g. 185.220.101.0/24) — must be checked before URL parsing (both use "/")
     if re.match(r"^[0-9a-fA-F:.]+/\d{1,3}$", value):
         try:
@@ -476,6 +488,71 @@ def abuseipdb_block(cidr):
             "reports": r.get("numReports", 0), "last": (r.get("mostRecentReport") or "")[:10],
             "cc": r.get("countryCode"),
         } for r in reported[:40]],
+    }
+
+
+def check_vt_file(file_hash):
+    """VirusTotal file endpoint — detection ratio, malware family, type, names, first seen."""
+    if not file_hash or not VT_API_KEY:
+        return None
+    data = safe_get(
+        f"https://www.virustotal.com/api/v3/files/{file_hash}",
+        headers={"x-apikey": VT_API_KEY},
+    )
+    a = data.get("data", {}).get("attributes") if data else None
+    if not a:
+        return {"found": False}
+    ptc = a.get("popular_threat_classification") or {}
+    family = ptc.get("suggested_threat_label")
+    labels = [c.get("value") for c in (ptc.get("popular_threat_category") or []) if c.get("value")]
+    names = a.get("names") or []
+    return {
+        "found": True,
+        "last_analysis_stats": a.get("last_analysis_stats", {}),
+        "reputation": a.get("reputation"),
+        "family": family,
+        "categories": labels,
+        "type": a.get("type_description") or a.get("type_tag"),
+        "size": a.get("size"),
+        "meaningful_name": a.get("meaningful_name") or (names[0] if names else None),
+        "names": names[:6],
+        "first_seen": _epoch_to_date(a.get("first_submission_date")),
+        "last_seen": _epoch_to_date(a.get("last_analysis_date")),
+        "times_submitted": a.get("times_submitted"),
+        "tags": a.get("tags") or [],
+        "sha256": a.get("sha256"), "md5": a.get("md5"), "sha1": a.get("sha1"),
+    }
+
+
+def malwarebazaar(file_hash):
+    """abuse.ch MalwareBazaar — known malware sample lookup (family, tags, delivery)."""
+    if not file_hash:
+        return None
+    headers = {"User-Agent": USER_AGENT}
+    if ABUSECH_API_KEY:
+        headers["Auth-Key"] = ABUSECH_API_KEY
+    try:
+        r = requests.post("https://mb-api.abuse.ch/api/v1/",
+                          data={"query": "get_info", "hash": file_hash},
+                          headers=headers, timeout=12)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+    except Exception:
+        return None
+    if d.get("query_status") != "ok" or not d.get("data"):
+        return {"found": False}
+    s = d["data"][0]
+    return {
+        "found": True,
+        "file_name": s.get("file_name"),
+        "file_type": s.get("file_type"),
+        "file_size": s.get("file_size"),
+        "signature": s.get("signature"),       # malware family
+        "tags": s.get("tags") or [],
+        "delivery_method": s.get("delivery_method"),
+        "first_seen": (s.get("first_seen") or "")[:10],
+        "reporter": s.get("reporter"),
     }
 
 
@@ -1368,8 +1445,39 @@ def score_cidr(result):
     return {"score": pts, "verdict": verdict, "reasons": reasons, "bec": []}
 
 
+def score_hash(result):
+    """File-hash scoring — VT detections + MalwareBazaar/ThreatFox known-malware match."""
+    pts, reasons = 0, []
+    vt = result.get("vt_file")
+    if vt and vt.get("found"):
+        s = vt.get("last_analysis_stats", {})
+        mal, susp = s.get("malicious", 0), s.get("suspicious", 0)
+        if mal >= 5:
+            pts += 55
+            reasons.append(f"VirusTotal: {mal} engines detect this file as malicious"
+                           + (f" ({vt.get('family')})" if vt.get("family") else ""))
+        elif mal >= 1:
+            pts += 30; reasons.append(f"VirusTotal: {mal} malicious / {susp} suspicious")
+        elif susp > 0:
+            pts += 12; reasons.append(f"VirusTotal: {susp} suspicious")
+    mb = result.get("mb")
+    if mb and mb.get("found"):
+        pts += 40
+        sig = mb.get("signature")
+        reasons.append("MalwareBazaar: known malware sample" + (f" ({sig})" if sig else ""))
+    tf = result.get("threatfox")
+    if tf and tf.get("found"):
+        pts += 30
+        fam = ", ".join(tf.get("malware") or [])
+        reasons.append("ThreatFox: known malicious IOC" + (f" ({fam})" if fam else ""))
+    pts, verdict = _verdict_from(pts)
+    return {"score": pts, "verdict": verdict, "reasons": reasons, "bec": []}
+
+
 def score(result):
     """Weighted risk scoring → verdict + reasons + BEC tags."""
+    if result.get("kind") == "hash":
+        return score_hash(result)
     if result.get("kind") == "cidr":
         return score_cidr(result)
     if result.get("is_ip"):
@@ -1558,7 +1666,9 @@ def analyze(raw_input):
     is_ip = parsed.get("is_ip", False)
     ip = domain if is_ip else resolve_ip(domain)
 
-    if parsed["kind"] == "cidr":
+    if parsed["kind"] == "hash":
+        result = _analyze_hash(parsed, raw_input)
+    elif parsed["kind"] == "cidr":
         result = _analyze_cidr(parsed, raw_input)
     elif is_ip:
         result = _analyze_ip(parsed, ip, raw_input)
@@ -1573,6 +1683,25 @@ def analyze(raw_input):
         "gsb": bool(GSB_API_KEY), "abusech": bool(ABUSECH_API_KEY),
     }
     return result
+
+
+def _analyze_hash(parsed, raw_input):
+    """File-hash path — VirusTotal + MalwareBazaar + ThreatFox (uses existing keys)."""
+    h = parsed["hash"]
+    futures = {
+        "vt_file":   _executor.submit(check_vt_file, h),
+        "mb":        _executor.submit(malwarebazaar, h),
+        "threatfox": _executor.submit(threatfox_lookup, h, h),
+    }
+    res = {k: f.result() for k, f in futures.items()}
+    return {
+        "ok": True, "kind": "hash", "input": raw_input,
+        "domain": h, "registrable": h, "ip": None, "is_ip": False,
+        "email": None, "url": None,
+        "hash": h, "hash_type": parsed.get("hash_type"),
+        "defanged": h,
+        "vt_file": res["vt_file"], "mb": res["mb"], "threatfox": res["threatfox"],
+    }
 
 
 def _analyze_cidr(parsed, raw_input):
@@ -1708,6 +1837,8 @@ def _analyze_domain(parsed, domain, ip, raw_input):
 
 def build_summary(r):
     """Analyst-ready, copy-paste block (defanged) for case notes."""
+    if r.get("kind") == "hash":
+        return build_hash_summary(r)
     if r.get("kind") == "cidr":
         return build_cidr_summary(r)
     if r.get("is_ip"):
@@ -1731,6 +1862,32 @@ def build_summary(r):
                  f"  |  DKIM: {', '.join(r['dkim']) if r.get('dkim') else 'none found'}")
     if r.get("bec"):
         lines.append("BEC flags: " + "; ".join(r["bec"]))
+    if r.get("reasons"):
+        lines.append("Signals:  " + " | ".join(r["reasons"]))
+    return "\n".join(lines)
+
+
+def build_hash_summary(r):
+    lines = []
+    vt = r.get("vt_file") or {}
+    mb = r.get("mb") or {}
+    lines.append(f"IOC:      {r['hash']}  ({r.get('hash_type','hash')})")
+    lines.append(f"Verdict:  {r['verdict']}  (risk {r['score']}/100)")
+    if vt.get("found"):
+        s = vt.get("last_analysis_stats", {})
+        lines.append(f"VirusTotal: {s.get('malicious',0)}/{sum(s.values()) or '?'} engines malicious"
+                     + (f"  ·  {vt.get('family')}" if vt.get("family") else ""))
+        if vt.get("type"):
+            lines.append(f"File:     {vt.get('type')}"
+                         + (f"  ·  {vt['size']} bytes" if vt.get("size") else "")
+                         + (f"  ·  \"{vt['meaningful_name']}\"" if vt.get("meaningful_name") else ""))
+        if vt.get("first_seen"):
+            lines.append(f"First seen: {vt['first_seen']}")
+    elif vt:
+        lines.append("VirusTotal: file not found in VT (unknown sample)")
+    if mb.get("found"):
+        lines.append(f"MalwareBazaar: known sample" + (f"  ·  {mb.get('signature')}" if mb.get("signature") else "")
+                     + (f"  ·  delivery: {mb['delivery_method']}" if mb.get("delivery_method") else ""))
     if r.get("reasons"):
         lines.append("Signals:  " + " | ".join(r["reasons"]))
     return "\n".join(lines)

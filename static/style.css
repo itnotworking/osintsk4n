@@ -136,7 +136,22 @@ header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
 .search button:disabled { color: var(--faint); cursor: not-allowed; }
 .search button.stop { color: var(--bad); }
 .search button.stop::before { content: "■ "; font-size: 10px; }
-.hint { text-align: center; font-size: 11.5px; color: var(--muted); max-width: 680px; margin: 0 auto 40px; }
+.hint { text-align: center; font-size: 11.5px; color: var(--muted); max-width: 680px; margin: 0 auto 20px; }
+
+/* recent searches (browser-local) */
+.recent { max-width: 760px; margin: 0 auto 26px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; }
+.recent:empty { margin: 0; }
+.recent .rlabel { font-size: 9.5px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--faint); }
+.rchip {
+  display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--muted);
+  background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 20px;
+  padding: 4px 11px; cursor: pointer; max-width: 240px; transition: border-color .12s, color .12s;
+}
+.rchip:hover { border-color: var(--accent); color: var(--text); }
+.rchip .rdot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.rchip .rt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rclear { font-size: 10px; color: var(--faint); cursor: pointer; letter-spacing: .5px; }
+.rclear:hover { color: var(--bad); }
 .hint code { color: var(--accent); padding: 0 3px; }
 
 .status { text-align: center; font-size: 12px; color: var(--muted); margin-bottom: 26px; min-height: 16px; }
