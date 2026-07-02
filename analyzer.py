@@ -270,10 +270,13 @@ def parse_target(raw):
 
     if not is_ip and not _DOMAIN_RE.match(domain):
         # Allow IDN/punycode that the regex might reject; try idna encode.
+        # But require an actual dot (TLD) so single-label junk ("not", "thing") is rejected.
         try:
             domain.encode("idna")
+            if "." not in domain:
+                raise ValueError("no TLD")
         except Exception:
-            result["error"] = f"'{domain}' is not a valid domain."
+            result["error"] = f"'{domain}' is not a valid {kind}."
             return result
 
     reg = registrable_domain(domain) if not is_ip else domain
