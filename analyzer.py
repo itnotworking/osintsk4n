@@ -1567,6 +1567,11 @@ def analyze(raw_input):
 
     result.update(score(result))
     result["ticket_summary"] = build_summary(result)
+    result["keys"] = {
+        "vt": bool(VT_API_KEY), "abuseipdb": bool(ABUSEIPDB_API_KEY),
+        "otx": bool(OTX_API_KEY), "urlscan": bool(URLSCAN_API_KEY),
+        "gsb": bool(GSB_API_KEY), "abusech": bool(ABUSECH_API_KEY),
+    }
     return result
 
 

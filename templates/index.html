@@ -202,6 +202,10 @@ function pill(label, on) {
   return '<span class="pill ' + (on ? 'on' : 'off') + '">' + esc(label) + (on ? ' ✓' : ' ✗') + '</span>';
 }
 
+// Is a given API key configured on the server? (so we don't say "set KEY" when it IS set)
+function keyOn(k) { return !!(current && current.keys && current.keys[k]); }
+function muted(msg) { return '<pre class="muted">' + esc(msg) + '</pre>'; }
+
 function cards(d) {
   if (d.kind === "ip") return ipCards(d);
   if (d.kind === "cidr") return cidrCards(d);
@@ -308,7 +312,7 @@ function cidrRepBlock(drop) {
 }
 
 function cidrAbuseBlock(b, present) {
-  if (!present) return '<pre class="muted">No AbuseIPDB block data (set ABUSEIPDB_API_KEY)</pre>';
+  if (!present) return muted(keyOn('abuseipdb') ? 'No AbuseIPDB block data returned.' : 'Set ABUSEIPDB_API_KEY to enable AbuseIPDB.');
   if (b.error) return '<div class="v warn" style="line-height:1.6">' + esc(b.error) + '</div>' +
     '<div class="muted" style="font-size:11px;margin-top:8px">Block-level abuse aggregation needs the AbuseIPDB check-block endpoint. Individual IPs in the range can still be triaged one at a time.</div>';
   const rc = b.reported_count || 0, hosts = b.num_hosts || 256;
@@ -361,7 +365,7 @@ function ipCards(d) {
 }
 
 function abuseDetailBlock(a) {
-  if (!a) return '<pre class="muted">No AbuseIPDB data (set ABUSEIPDB_API_KEY)</pre>';
+  if (!a) return muted(keyOn('abuseipdb') ? 'No AbuseIPDB record for this IP.' : 'Set ABUSEIPDB_API_KEY to enable AbuseIPDB.');
   const sc = a.abuseConfidenceScore || 0;
   return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good")) +
     kvrow("Total reports", (a.totalReports||0) + (a.numDistinctUsers ? "  ·  " + a.numDistinctUsers + " reporters" : "")) +
@@ -376,7 +380,7 @@ function abuseDetailBlock(a) {
 }
 
 function vtIpBlock(v) {
-  if (!v) return '<pre class="muted">No VT data (set VT_API_KEY)</pre>';
+  if (!v) return muted(keyOn('vt') ? 'No VirusTotal record for this IP.' : 'Set VT_API_KEY to enable VirusTotal.');
   const s = v.last_analysis_stats || {};
   return kvrow("Malicious", s.malicious||0, (s.malicious>0?"bad":"good")) +
     kvrow("Suspicious", s.suspicious||0, (s.suspicious>0?"warn":"")) +
@@ -427,7 +431,7 @@ function kvrow(k, v, cls) {
 }
 
 function vtBlock(v) {
-  if (!v) return '<pre class="muted">No VT data (set VT_API_KEY, or no record)</pre>';
+  if (!v) return muted(keyOn('vt') ? 'No VirusTotal record for this indicator.' : 'Set VT_API_KEY to enable VirusTotal.');
   const s = v.last_analysis_stats || {};
   const rep = v.reputation;
   return kvrow("Malicious", s.malicious||0, (s.malicious>0?"bad":"good")) +
@@ -438,7 +442,7 @@ function vtBlock(v) {
          (v.categories ? kvrow("Categories", Object.values(v.categories).slice(0,4).join(", ")) : "");
 }
 function abuseBlock(a) {
-  if (!a) return '<pre class="muted">No AbuseIPDB data (set ABUSEIPDB_API_KEY)</pre>';
+  if (!a) return muted(!(current && current.ip) ? 'Domain did not resolve to an IP — no IP reputation to check.' : (keyOn('abuseipdb') ? 'No AbuseIPDB record for this IP.' : 'Set ABUSEIPDB_API_KEY to enable AbuseIPDB.'));
   const sc = a.abuseConfidenceScore || 0;
   return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good")) +
          kvrow("Total reports", a.totalReports||0) +
@@ -448,7 +452,7 @@ function abuseBlock(a) {
          kvrow("Domain", a.domain || "—");
 }
 function otxBlock(o) {
-  if (!o) return '<pre class="muted">No OTX data (set OTX_API_KEY)</pre>';
+  if (!o) return muted(keyOn('otx') ? 'OTX returned no data (endpoint may be slow or rate-limited — retry).' : 'Set OTX_API_KEY to enable AlienVault OTX.');
   if (!o.pulse_count) return kvrow("Threat reports", "0", "good") + '<div class="muted" style="font-size:11px;margin-top:6px">No community threat reports reference this indicator.</div>';
   return kvrow("Threat reports", o.pulse_count, "bad") +
     (o.malware_families && o.malware_families.length ? kvrow("Malware", o.malware_families.join(", "), "bad") : "") +
@@ -461,15 +465,15 @@ function threatFeedsBlock(d) {
   const gsb = d.gsb, tf = d.threatfox, uh = d.urlhaus;
   let html = "";
   // Google Safe Browsing
-  if (!gsb) html += kvrow("Safe Browsing", "set GSB_API_KEY", "");
+  if (!gsb) html += kvrow("Safe Browsing", keyOn('gsb') ? "unavailable" : "set GSB_API_KEY", "");
   else if (gsb.flagged) html += kvrow("Safe Browsing", (gsb.threats || []).join(", ") || "FLAGGED", "bad");
   else html += kvrow("Safe Browsing", "clean", "good");
   // ThreatFox
-  if (!tf) html += kvrow("ThreatFox", "set ABUSECH_API_KEY", "");
+  if (!tf) html += kvrow("ThreatFox", keyOn('abusech') ? "unavailable" : "set ABUSECH_API_KEY", "");
   else if (tf.found) html += kvrow("ThreatFox", "KNOWN IOC" + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), "bad");
   else html += kvrow("ThreatFox", "no match", "good");
   // URLhaus
-  if (!uh) html += kvrow("URLhaus", "set ABUSECH_API_KEY", "");
+  if (!uh) html += kvrow("URLhaus", keyOn('abusech') ? "unavailable" : "set ABUSECH_API_KEY", "");
   else if (uh.found) html += kvrow("URLhaus", "MALWARE HOST · " + (uh.url_count || 0) + " URLs", "bad");
   else html += kvrow("URLhaus", "no match", "good");
   return html;
