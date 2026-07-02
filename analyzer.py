@@ -387,13 +387,27 @@ def abuseipdb_block(cidr):
     """AbuseIPDB /check-block — aggregate abuse across a network range (up to /24)."""
     if not cidr or not ABUSEIPDB_API_KEY:
         return None
-    res = safe_get(
-        "https://api.abuseipdb.com/api/v2/check-block",
-        headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
-        params={"network": cidr, "maxAgeInDays": 90},
-        timeout=15,
-    )
-    data = res.get("data") if res else None
+    try:
+        r = requests.get(
+            "https://api.abuseipdb.com/api/v2/check-block",
+            headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
+            params={"network": cidr, "maxAgeInDays": 90},
+            timeout=15,
+        )
+    except Exception:
+        return {"error": "Could not reach AbuseIPDB."}
+    if r.status_code in (402, 403):
+        return {"error": "AbuseIPDB check-block isn't available on this API plan (paid feature)."}
+    if r.status_code == 422:
+        return {"error": "AbuseIPDB rejected this network (size or format)."}
+    if r.status_code == 429:
+        return {"error": "AbuseIPDB rate limit reached — try again shortly."}
+    if r.status_code != 200:
+        return {"error": f"AbuseIPDB check-block failed ({r.status_code})."}
+    try:
+        data = r.json().get("data")
+    except Exception:
+        data = None
     if not data:
         return None
     reported = data.get("reportedAddress") or []
@@ -1278,7 +1292,7 @@ def score_cidr(result):
     """Network-block scoring — share of the range reported for abuse + severity."""
     pts, reasons = 0, []
     block = result.get("block")
-    if block:
+    if block and not block.get("error"):
         rc = block.get("reported_count", 0)
         hosts = block.get("num_hosts") or 256
         pct = (rc / hosts * 100) if hosts else 0

@@ -297,7 +297,9 @@ function cidrCards(d) {
 }
 
 function cidrAbuseBlock(b, present) {
-  if (!present) return '<pre class="muted">No AbuseIPDB block data (set ABUSEIPDB_API_KEY, or plan may not allow /check-block)</pre>';
+  if (!present) return '<pre class="muted">No AbuseIPDB block data (set ABUSEIPDB_API_KEY)</pre>';
+  if (b.error) return '<div class="v warn" style="line-height:1.6">' + esc(b.error) + '</div>' +
+    '<div class="muted" style="font-size:11px;margin-top:8px">Block-level abuse aggregation needs the AbuseIPDB check-block endpoint. Individual IPs in the range can still be triaged one at a time.</div>';
   const rc = b.reported_count || 0, hosts = b.num_hosts || 256;
   const pct = hosts ? Math.round(rc / hosts * 100) : 0;
   let html = kvrow("Reported addresses", rc + " of " + hosts + "  (" + pct + "%)", rc ? (pct>=8?"bad":"warn") : "good");
