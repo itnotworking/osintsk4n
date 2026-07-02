@@ -352,22 +352,21 @@ function passiveDnsBlock(p) {
 function ipThreatBlock(d) {
   const otx = d.otx, tf = d.threatfox, uh = d.urlhaus;
   let html = "";
-  // OTX pulses
-  if (!otx) html += kvrow("OTX", "no data", "");
+  // OTX pulses (null = source didn't respond; distinct from 0 reports)
+  if (!otx) html += kvrow("OTX", "unavailable", "");
   else if (otx.pulse_count > 0) {
     html += kvrow("OTX reports", otx.pulse_count, "bad");
     if (otx.malware_families && otx.malware_families.length) html += kvrow("Malware", otx.malware_families.join(", "), "bad");
     if (otx.adversaries && otx.adversaries.length) html += kvrow("Actors", otx.adversaries.join(", "), "bad");
     if (otx.tags && otx.tags.length) html += kvrow("Tags", otx.tags.join(", "));
-  } else html += kvrow("OTX reports", "0", "good");
-  // ThreatFox
-  if (!tf) html += kvrow("ThreatFox", "set ABUSECH_API_KEY");
+  } else html += kvrow("OTX reports", "0 (checked, none)", "good");
+  // ThreatFox / URLhaus track known-malware infra specifically; 'no match' is a real clean result.
+  if (!tf) html += kvrow("ThreatFox", "unavailable", "");
   else if (tf.found) html += kvrow("ThreatFox", "KNOWN IOC" + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), "bad");
-  else html += kvrow("ThreatFox", "no match", "good");
-  // URLhaus
-  if (!uh) html += kvrow("URLhaus", "set ABUSECH_API_KEY");
+  else html += kvrow("ThreatFox", "no known-malware match", "good");
+  if (!uh) html += kvrow("URLhaus", "unavailable", "");
   else if (uh.found) html += kvrow("URLhaus", "HOSTS MALWARE · " + (uh.url_count||0) + " URLs", "bad");
-  else html += kvrow("URLhaus", "no match", "good");
+  else html += kvrow("URLhaus", "not a known malware host", "good");
   return html;
 }
 

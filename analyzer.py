@@ -531,7 +531,7 @@ def otx_lookup(domain):
         headers["X-OTX-API-KEY"] = OTX_API_KEY
     data = safe_get(
         f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/general",
-        headers=headers, timeout=10,
+        headers=headers, timeout=16,
     )
     if not data:
         return None
@@ -567,7 +567,7 @@ def otx_ip(ip):
         headers["X-OTX-API-KEY"] = OTX_API_KEY
     gen = safe_get(
         f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
-        headers=headers, timeout=9,
+        headers=headers, timeout=16,   # OTX IP general is slow (~13s)
     )
     if not gen:
         return None
