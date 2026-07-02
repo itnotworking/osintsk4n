@@ -1453,7 +1453,7 @@ def score_hash(result):
         s = vt.get("last_analysis_stats", {})
         mal, susp = s.get("malicious", 0), s.get("suspicious", 0)
         if mal >= 5:
-            pts += 55
+            pts += 65
             reasons.append(f"VirusTotal: {mal} engines detect this file as malicious"
                            + (f" ({vt.get('family')})" if vt.get("family") else ""))
         elif mal >= 1:
