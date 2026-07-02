@@ -215,9 +215,9 @@ function cards(d) {
   const dmarc = d.dmarc_parsed, spf = d.spf_parsed;
   const dmarcBad = !dmarc || (dmarc.policy || "none").toLowerCase() === "none";
   out.push(card("Email Auth Posture (BEC)",
-    kvrow("DMARC", dmarc ? "p=" + dmarc.policy + (dmarc.pct && dmarc.pct !== "100" ? " pct=" + dmarc.pct : "") : "MISSING", dmarcBad ? "bad" : "good") +
-    kvrow("SPF", spf ? spf.policy : "MISSING", spf ? (spf.policy.includes("dangerous") ? "bad" : "good") : "bad") +
-    kvrow("DKIM", (d.dkim && d.dkim.length) ? d.dkim.join(", ") : "none found (selectors probed)", (d.dkim && d.dkim.length) ? "good" : "warn") +
+    kvrow("DMARC", dmarc ? "p=" + dmarc.policy + (dmarc.pct && dmarc.pct !== "100" ? " pct=" + dmarc.pct : "") : "MISSING", dmarcBad ? "bad" : "good", "DMARC tells receivers what to do with spoofed mail. p=reject (block) is strongest; p=none or MISSING means the domain is easy to spoof (a BEC risk).") +
+    kvrow("SPF", spf ? spf.policy : "MISSING", spf ? (spf.policy.includes("dangerous") ? "bad" : "good") : "bad", "SPF lists which servers may send mail for this domain. MISSING makes spoofing easier.") +
+    kvrow("DKIM", (d.dkim && d.dkim.length) ? d.dkim.join(", ") : "none found (selectors probed)", (d.dkim && d.dkim.length) ? "good" : "warn", "DKIM cryptographically signs outgoing mail. We probe common selectors; 'none found' isn't conclusive but is a weak-auth sign.") +
     kvrow("Mail provider", d.mx_provider || "—") +
     (dmarc && dmarc.rua ? kvrow("DMARC rua", dmarc.rua) : "")
   ));
@@ -367,8 +367,8 @@ function ipCards(d) {
 function abuseDetailBlock(a) {
   if (!a) return muted(keyOn('abuseipdb') ? 'No AbuseIPDB record for this IP.' : 'Set ABUSEIPDB_API_KEY to enable AbuseIPDB.');
   const sc = a.abuseConfidenceScore || 0;
-  return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good")) +
-    kvrow("Total reports", (a.totalReports||0) + (a.numDistinctUsers ? "  ·  " + a.numDistinctUsers + " reporters" : "")) +
+  return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good"), "AbuseIPDB's confidence (0–100) that this IP is malicious, based on community reports. 50+ is high, 100 is certain.") +
+    kvrow("Total reports", (a.totalReports||0) + (a.numDistinctUsers ? "  ·  " + a.numDistinctUsers + " reporters" : ""), "", "How many abuse reports (and distinct reporters) this IP has in the last 90 days.") +
     kvrow("Last reported", a.lastReportedAt || "—") +
     kvrow("Usage type", a.usageType || "?") +
     kvrow("ISP", a.isp || "?") +
@@ -382,11 +382,11 @@ function abuseDetailBlock(a) {
 function vtIpBlock(v) {
   if (!v) return muted(keyOn('vt') ? 'No VirusTotal record for this IP.' : 'Set VT_API_KEY to enable VirusTotal.');
   const s = v.last_analysis_stats || {};
-  return kvrow("Malicious", s.malicious||0, (s.malicious>0?"bad":"good")) +
-    kvrow("Suspicious", s.suspicious||0, (s.suspicious>0?"warn":"")) +
-    kvrow("Harmless", s.harmless||0) +
-    kvrow("Undetected", s.undetected||0) +
-    (v.reputation!=null ? kvrow("Reputation", v.reputation, v.reputation<0?"bad":"") : "") +
+  return kvrow("Malicious", s.malicious||0, (s.malicious>0?"bad":"good"), VT_TIP.mal) +
+    kvrow("Suspicious", s.suspicious||0, (s.suspicious>0?"warn":""), VT_TIP.susp) +
+    kvrow("Harmless", s.harmless||0, "", VT_TIP.harm) +
+    kvrow("Undetected", s.undetected||0, "", VT_TIP.undet) +
+    (v.reputation!=null ? kvrow("Reputation", v.reputation, v.reputation<0?"bad":"", VT_TIP.rep) : "") +
     (v.as_owner ? kvrow("AS owner", v.as_owner) : "") +
     (v.network ? kvrow("Network", v.network) : "") +
     ((v.tags && v.tags.length) ? kvrow("Tags", v.tags.join(", ")) : "");
@@ -426,29 +426,38 @@ function ipThreatBlock(d) {
 function card(title, body) {
   return '<div class="card fade-in"><h3><span class="ttl">' + esc(title) + '</span></h3><div class="kv-wrap">' + body + '</div></div>';
 }
-function kvrow(k, v, cls) {
-  return '<div class="kv"><div class="k">' + esc(k) + '</div><div class="v ' + (cls||"") + '">' + esc(v) + '</div></div>';
+function kvrow(k, v, cls, tip) {
+  return '<div class="kv' + (tip ? ' has-tip' : '') + '"' + (tip ? ' data-tip="' + esc(tip) + '"' : '') + '>' +
+    '<div class="k">' + esc(k) + '</div><div class="v ' + (cls||"") + '">' + esc(v) + '</div></div>';
 }
 
+const VT_TIP = {
+  mal: "How many security vendors (out of ~90) flagged this as MALICIOUS. Even 1–2 is worth a look; 5+ is a strong signal.",
+  susp: "Vendors that flagged this as SUSPICIOUS — questionable but not confirmed malicious.",
+  harm: "Vendors that consider this HARMLESS (clean/safe).",
+  undet: "Vendors that returned NO detection — they didn't flag it either way. Normal even for good sites.",
+  rep: "VirusTotal community REPUTATION score. Negative = bad reputation, positive = good, 0 = neutral.",
+  cat: "Content categories vendors assigned to this (e.g. phishing, malware, business)."
+};
 function vtBlock(v) {
   if (!v) return muted(keyOn('vt') ? 'No VirusTotal record for this indicator.' : 'Set VT_API_KEY to enable VirusTotal.');
   const s = v.last_analysis_stats || {};
   const rep = v.reputation;
-  return kvrow("Malicious", s.malicious||0, (s.malicious>0?"bad":"good")) +
-         kvrow("Suspicious", s.suspicious||0, (s.suspicious>0?"warn":"")) +
-         kvrow("Harmless", s.harmless||0) +
-         kvrow("Undetected", s.undetected||0) +
-         (rep!=null ? kvrow("Reputation", rep, rep<0?"bad":"") : "") +
-         (v.categories ? kvrow("Categories", Object.values(v.categories).slice(0,4).join(", ")) : "");
+  return kvrow("Malicious", s.malicious||0, (s.malicious>0?"bad":"good"), VT_TIP.mal) +
+         kvrow("Suspicious", s.suspicious||0, (s.suspicious>0?"warn":""), VT_TIP.susp) +
+         kvrow("Harmless", s.harmless||0, "", VT_TIP.harm) +
+         kvrow("Undetected", s.undetected||0, "", VT_TIP.undet) +
+         (rep!=null ? kvrow("Reputation", rep, rep<0?"bad":"", VT_TIP.rep) : "") +
+         (v.categories ? kvrow("Categories", Object.values(v.categories).slice(0,4).join(", "), "", VT_TIP.cat) : "");
 }
 function abuseBlock(a) {
   if (!a) return muted(!(current && current.ip) ? 'Domain did not resolve to an IP — no IP reputation to check.' : (keyOn('abuseipdb') ? 'No AbuseIPDB record for this IP.' : 'Set ABUSEIPDB_API_KEY to enable AbuseIPDB.'));
   const sc = a.abuseConfidenceScore || 0;
-  return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good")) +
-         kvrow("Total reports", a.totalReports||0) +
+  return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good"), "AbuseIPDB's confidence (0–100) that this IP is malicious, based on community reports. 50+ is high, 100 is certain.") +
+         kvrow("Total reports", a.totalReports||0, "", "How many times this IP was reported to AbuseIPDB in the last 90 days.") +
          kvrow("Last reported", a.lastReportedAt || "—") +
          kvrow("Country", a.countryCode || "?") +
-         kvrow("Usage type", a.usageType || "?") +
+         kvrow("Usage type", a.usageType || "?", "", "What the IP is used for (e.g. Data Center / CDN, ISP, hosting).") +
          kvrow("Domain", a.domain || "—");
 }
 function otxBlock(o) {
