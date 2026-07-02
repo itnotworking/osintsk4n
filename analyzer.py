@@ -559,7 +559,7 @@ def otx_lookup(domain):
 
 
 def otx_ip(ip):
-    """OTX IPv4 — threat pulses (actors/malware) + passive DNS (domains hosted here)."""
+    """OTX IPv4 — threat pulses (actors/malware). (passive DNS comes from VT — more reliable)"""
     if not ip:
         return None
     headers = {"User-Agent": USER_AGENT}
@@ -567,16 +567,12 @@ def otx_ip(ip):
         headers["X-OTX-API-KEY"] = OTX_API_KEY
     gen = safe_get(
         f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
-        headers=headers, timeout=10,
+        headers=headers, timeout=9,
     )
-    pdns = safe_get(
-        f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/passive_dns",
-        headers=headers, timeout=10,
-    )
-    if not gen and not pdns:
+    if not gen:
         return None
     families, adversaries, tags, names = set(), set(), set(), []
-    pi = (gen or {}).get("pulse_info") or {}
+    pi = gen.get("pulse_info") or {}
     for p in (pi.get("pulses") or [])[:25]:
         if p.get("name"):
             names.append(p["name"])
@@ -588,21 +584,41 @@ def otx_ip(ip):
             adversaries.add(p["adversary"])
         for t in (p.get("tags") or []):
             tags.add(t)
-    passive = []
-    for rec in ((pdns or {}).get("passive_dns") or [])[:25]:
-        h = rec.get("hostname")
-        if h:
-            passive.append({"hostname": h, "last": (rec.get("last") or "")[:10],
-                            "first": (rec.get("first") or "")[:10]})
     return {
         "pulse_count": pi.get("count", 0),
         "pulses": names[:6],
         "malware_families": sorted(families)[:8],
         "adversaries": sorted(adversaries)[:6],
         "tags": sorted(tags)[:10],
-        "passive_dns": passive,
-        "passive_dns_count": ((pdns or {}).get("count")) or len(passive),
     }
+
+
+def _epoch_to_date(ts):
+    try:
+        return dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def vt_ip_resolutions(ip):
+    """Passive DNS via VirusTotal — domains that have resolved to this IP (uses VT key)."""
+    if not ip or not VT_API_KEY:
+        return None
+    data = safe_get(
+        f"https://www.virustotal.com/api/v3/ip_addresses/{ip}/resolutions",
+        headers={"x-apikey": VT_API_KEY}, params={"limit": 40},
+    )
+    if not data or not data.get("data"):
+        return None
+    recs = []
+    for item in data["data"]:
+        a = item.get("attributes") or {}
+        h = a.get("host_name")
+        if h:
+            recs.append({"hostname": h, "date": _epoch_to_date(a.get("date"))})
+    if not recs:
+        return None
+    return {"count": data.get("meta", {}).get("count", len(recs)), "records": recs}
 
 
 def rdap_ip(ip):
@@ -1405,6 +1421,7 @@ def _analyze_ip(parsed, ip, raw_input):
     """Dedicated IP path — correct IP endpoints, no domain/email checks."""
     futures = {
         "vt":        _executor.submit(check_vt_ip, ip),
+        "passive":   _executor.submit(vt_ip_resolutions, ip),
         "abuse":     _executor.submit(abuseipdb, ip, True),
         "otx":       _executor.submit(otx_ip, ip),
         "rdap_ip":   _executor.submit(rdap_ip, ip),
@@ -1425,7 +1442,7 @@ def _analyze_ip(parsed, ip, raw_input):
         "rdap_ip": res["rdap_ip"], "info": res["info"],
         "shodan": res["shodan"], "greynoise": res["greynoise"],
         "threatfox": res["threatfox"], "urlhaus": res["urlhaus"],
-        "ptr": res["ptr"],
+        "ptr": res["ptr"], "passive_dns": res["passive"],
     }
 
 
@@ -1560,9 +1577,9 @@ def build_ip_summary(r):
                      f"  ·  {ab.get('totalReports',0)} reports")
         if ab.get("top_categories"):
             lines.append("Reported: " + ", ".join(ab["top_categories"]))
-    otx = r.get("otx") or {}
-    if otx.get("passive_dns_count"):
-        lines.append(f"Passive DNS: {otx['passive_dns_count']} domains have resolved here")
+    pdns = r.get("passive_dns") or {}
+    if pdns.get("count"):
+        lines.append(f"Passive DNS: {pdns['count']} domains have resolved here")
     if r.get("reasons"):
         lines.append("Signals:  " + " | ".join(r["reasons"]))
     return "\n".join(lines)

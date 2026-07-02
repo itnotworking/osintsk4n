@@ -302,8 +302,8 @@ function ipCards(d) {
   // IP reputation & exposure (GreyNoise + Shodan)
   out.push(card("Reputation & Exposure", ipRepBlock(d)));
 
-  // Passive DNS (OTX)
-  out.push(card("Passive DNS", passiveDnsBlock(d.otx)));
+  // Passive DNS (VT resolutions)
+  out.push(card("Passive DNS", passiveDnsBlock(d.passive_dns)));
 
   // Threat intel + feeds
   out.push(card("Threat Intel & Feeds", ipThreatBlock(d)));
@@ -339,12 +339,12 @@ function vtIpBlock(v) {
     ((v.tags && v.tags.length) ? kvrow("Tags", v.tags.join(", ")) : "");
 }
 
-function passiveDnsBlock(o) {
-  if (!o || !o.passive_dns || !o.passive_dns.length)
+function passiveDnsBlock(p) {
+  if (!p || !p.records || !p.records.length)
     return '<pre class="muted">No passive-DNS records (domains that resolved here)</pre>';
-  let html = kvrow("Domains seen", o.passive_dns_count || o.passive_dns.length);
+  let html = kvrow("Domains seen", p.count || p.records.length);
   html += '<div class="subs" style="margin-top:8px">' +
-    o.passive_dns.map(p => '<div>' + esc(p.hostname) + (p.last ? ' <span class="muted">· ' + esc(p.last) + '</span>' : '') + '</div>').join("") +
+    p.records.map(r => '<div>' + esc(r.hostname) + (r.date ? ' <span class="muted">· ' + esc(r.date) + '</span>' : '') + '</div>').join("") +
     '</div>';
   return html;
 }
