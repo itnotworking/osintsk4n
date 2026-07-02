@@ -27,7 +27,7 @@
 
 <div class="wrap">
   <form class="search" onsubmit="event.preventDefault(); analyze();">
-    <input id="target" placeholder="domain, URL, or email — defanged is fine (hxxp://evil[.]com)" autocomplete="off" autofocus>
+    <input id="target" placeholder="domain, IP, URL, or email — defanged is fine (hxxp://evil[.]com)" autocomplete="off" autofocus>
     <button id="analyzeBtn" type="button" onclick="toggleSearch()">Analyze</button>
   </form>
   <p class="hint">
@@ -190,7 +190,7 @@ function buildBrief(d) {
     "Likely Malicious": "likely malicious", "Suspicious": "suspicious",
     "Low–Moderate": "low-to-moderate risk", "Likely Legitimate": "likely legitimate"
   })[d.verdict] || d.verdict.toLowerCase();
-  const kind = d.kind === "email" ? "email domain" : (d.kind === "url" ? "URL" : "domain");
+  const kind = d.kind === "email" ? "email domain" : (d.kind === "url" ? "URL" : (d.kind === "ip" ? "IP address" : "domain"));
   let s = "This " + kind + " (" + d.defanged + ") is assessed as " + plain +
     " with a risk score of " + d.score + "/100. ";
   const pts = stakeholderPoints(d);
@@ -203,6 +203,7 @@ function pill(label, on) {
 }
 
 function cards(d) {
+  if (d.kind === "ip") return ipCards(d);
   const out = [];
 
   // Email authentication posture — the BEC card
@@ -271,6 +272,103 @@ function cards(d) {
     out.push(card("Subdomains (crt.sh)", crtBlock(d.crtsh)));
 
   return '<div class="grid">' + out.join("") + '</div>' + urlscanSection(d) + buildTicket(d);
+}
+
+/* ---------- IP-address layout ---------- */
+function ipCards(d) {
+  const out = [];
+  const i = d.info || {}, rip = d.rdap_ip || {}, ab = d.abuse || {};
+
+  // Network / allocation
+  out.push(card("Network",
+    kvrow("IP", d.ip) +
+    kvrow("rDNS (PTR)", d.ptr || i.reverse || "—") +
+    kvrow("ASN", i.as || (d.vt && d.vt.asn ? "AS" + d.vt.asn : "?")) +
+    kvrow("ISP / Org", i.isp || i.org || (d.vt && d.vt.as_owner) || "?") +
+    kvrow("Country", i.country ? (i.country + " (" + (i.countryCode||"") + ")") : (rip.country || "?")) +
+    kvrow("Location", (i.regionName || "?") + " / " + (i.city || "?")) +
+    kvrow("Allocation", rip.name ? (rip.name + (rip.cidr ? "  " + rip.cidr : "")) : "?") +
+    (rip.range ? kvrow("Range", rip.range) : "") +
+    (rip.abuse_contact ? kvrow("Abuse contact", rip.abuse_contact) : "") +
+    kvrow("Hosting/Proxy", (i.hosting ? "hosting " : "") + (i.proxy ? "proxy/VPN/Tor" : "") || "—", i.proxy ? "warn" : "")
+  ));
+
+  // AbuseIPDB (rich)
+  out.push(card("AbuseIPDB", abuseDetailBlock(ab)));
+
+  // VirusTotal (IP)
+  out.push(card("VirusTotal (IP)", vtIpBlock(d.vt)));
+
+  // IP reputation & exposure (GreyNoise + Shodan)
+  out.push(card("Reputation & Exposure", ipRepBlock(d)));
+
+  // Passive DNS (OTX)
+  out.push(card("Passive DNS", passiveDnsBlock(d.otx)));
+
+  // Threat intel + feeds
+  out.push(card("Threat Intel & Feeds", ipThreatBlock(d)));
+
+  return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
+}
+
+function abuseDetailBlock(a) {
+  if (!a) return '<pre class="muted">No AbuseIPDB data (set ABUSEIPDB_API_KEY)</pre>';
+  const sc = a.abuseConfidenceScore || 0;
+  return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good")) +
+    kvrow("Total reports", (a.totalReports||0) + (a.numDistinctUsers ? "  ·  " + a.numDistinctUsers + " reporters" : "")) +
+    kvrow("Last reported", a.lastReportedAt || "—") +
+    kvrow("Usage type", a.usageType || "?") +
+    kvrow("ISP", a.isp || "?") +
+    (a.domain ? kvrow("Domain", a.domain) : "") +
+    ((a.hostnames && a.hostnames.length) ? kvrow("Hostnames", a.hostnames.join(", ")) : "") +
+    kvrow("Tor", a.isTor ? "YES" : "no", a.isTor ? "warn" : "") +
+    kvrow("Whitelisted", a.isWhitelisted ? "yes" : "no", a.isWhitelisted ? "good" : "") +
+    ((a.top_categories && a.top_categories.length) ? kvrow("Reported for", a.top_categories.join(", "), "bad") : "");
+}
+
+function vtIpBlock(v) {
+  if (!v) return '<pre class="muted">No VT data (set VT_API_KEY)</pre>';
+  const s = v.last_analysis_stats || {};
+  return kvrow("Malicious", s.malicious||0, (s.malicious>0?"bad":"good")) +
+    kvrow("Suspicious", s.suspicious||0, (s.suspicious>0?"warn":"")) +
+    kvrow("Harmless", s.harmless||0) +
+    kvrow("Undetected", s.undetected||0) +
+    (v.reputation!=null ? kvrow("Reputation", v.reputation, v.reputation<0?"bad":"") : "") +
+    (v.as_owner ? kvrow("AS owner", v.as_owner) : "") +
+    (v.network ? kvrow("Network", v.network) : "") +
+    ((v.tags && v.tags.length) ? kvrow("Tags", v.tags.join(", ")) : "");
+}
+
+function passiveDnsBlock(o) {
+  if (!o || !o.passive_dns || !o.passive_dns.length)
+    return '<pre class="muted">No passive-DNS records (domains that resolved here)</pre>';
+  let html = kvrow("Domains seen", o.passive_dns_count || o.passive_dns.length);
+  html += '<div class="subs" style="margin-top:8px">' +
+    o.passive_dns.map(p => '<div>' + esc(p.hostname) + (p.last ? ' <span class="muted">· ' + esc(p.last) + '</span>' : '') + '</div>').join("") +
+    '</div>';
+  return html;
+}
+
+function ipThreatBlock(d) {
+  const otx = d.otx, tf = d.threatfox, uh = d.urlhaus;
+  let html = "";
+  // OTX pulses
+  if (!otx) html += kvrow("OTX", "no data", "");
+  else if (otx.pulse_count > 0) {
+    html += kvrow("OTX reports", otx.pulse_count, "bad");
+    if (otx.malware_families && otx.malware_families.length) html += kvrow("Malware", otx.malware_families.join(", "), "bad");
+    if (otx.adversaries && otx.adversaries.length) html += kvrow("Actors", otx.adversaries.join(", "), "bad");
+    if (otx.tags && otx.tags.length) html += kvrow("Tags", otx.tags.join(", "));
+  } else html += kvrow("OTX reports", "0", "good");
+  // ThreatFox
+  if (!tf) html += kvrow("ThreatFox", "set ABUSECH_API_KEY");
+  else if (tf.found) html += kvrow("ThreatFox", "KNOWN IOC" + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), "bad");
+  else html += kvrow("ThreatFox", "no match", "good");
+  // URLhaus
+  if (!uh) html += kvrow("URLhaus", "set ABUSECH_API_KEY");
+  else if (uh.found) html += kvrow("URLhaus", "HOSTS MALWARE · " + (uh.url_count||0) + " URLs", "bad");
+  else html += kvrow("URLhaus", "no match", "good");
+  return html;
 }
 
 function card(title, body) {
@@ -534,6 +632,12 @@ function selectTicket(fmt) {
 }
 
 function recAction(d) {
+  if (d.kind === "ip") return ({
+    "Likely Malicious": "Block the IP at the firewall/EDR (CrowdStrike Falcon); hunt for existing connections to it in proxy/firewall logs; check for beaconing.",
+    "Suspicious": "Monitor and rate-limit; correlate with recent alerts; consider a temporary block pending review.",
+    "Low–Moderate": "Low confidence of malice; document and monitor for repeat connections.",
+    "Likely Legitimate": "No action required; treat as normal infrastructure."
+  })[d.verdict] || "Review manually.";
   return ({
     "Likely Malicious": "Block domain/sender at Mimecast and CrowdStrike Falcon; search & purge delivered messages; hunt for prior clicks/interaction.",
     "Suspicious": "Quarantine pending review; verify legitimacy out-of-band with the recipient/sender; monitor for related indicators.",
@@ -550,6 +654,7 @@ function authLine(d) {
 
 // Security Team — full technical report for analysts/SOC.
 function fmtSecurity(d) {
+  if (d.kind === "ip") return fmtSecurityIP(d);
   const i = d.info || {};
   const L = [];
   L.push("SECURITY TEAM — TRIAGE REPORT");
@@ -568,7 +673,40 @@ function fmtSecurity(d) {
   return L.join("\n");
 }
 
+function fmtSecurityIP(d) {
+  const i = d.info || {}, rip = d.rdap_ip || {}, ab = d.abuse || {}, vt = d.vt || {};
+  const L = [];
+  L.push("SECURITY TEAM — IP TRIAGE REPORT");
+  L.push("");
+  L.push("IOC:      " + d.defanged + "  (ip)");
+  L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  L.push("Network:  " + (i.as || (vt.asn ? "AS" + vt.asn : "?")) + "  ·  " + (i.country || "?") + "  ·  " + (i.isp || i.org || vt.as_owner || "?"));
+  if (rip.name || rip.cidr) L.push("Alloc:    " + (rip.name || "?") + (rip.cidr ? "  " + rip.cidr : ""));
+  if (d.ptr || i.reverse) L.push("rDNS:     " + (d.ptr || i.reverse));
+  if (ab && Object.keys(ab).length) L.push("AbuseIPDB: " + (ab.abuseConfidenceScore||0) + "/100  ·  " + (ab.usageType||"?") + (ab.isTor ? "  ·  Tor" : "") + "  ·  " + (ab.totalReports||0) + " reports");
+  if (ab.top_categories && ab.top_categories.length) L.push("Reported: " + ab.top_categories.join(", "));
+  if (d.otx && d.otx.passive_dns_count) L.push("PassiveDNS: " + d.otx.passive_dns_count + " domains resolved here");
+  if (d.reasons && d.reasons.length) L.push("Signals:  " + d.reasons.join(" | "));
+  L.push("");
+  L.push("Recommended action: " + recAction(d));
+  return L.join("\n");
+}
+
+function ipPoints(d) {
+  const pts = [];
+  const ab = d.abuse || {}, vt = d.vt || {};
+  if ((ab.abuseConfidenceScore || 0) >= 50) pts.push("This IP has a high abuse-confidence score and has been widely reported for malicious activity.");
+  if ((vt.last_analysis_stats || {}).malicious > 0) pts.push("Security vendors flag this IP as malicious.");
+  if (d.threatfox && d.threatfox.found) pts.push("It matches a known malware/command-and-control indicator.");
+  if (d.otx && d.otx.pulse_count > 0 && ((d.otx.malware_families || []).length || (d.otx.adversaries || []).length)) pts.push("It is linked to reported threat activity (associated malware or threat actors).");
+  if (ab.isTor) pts.push("It is a Tor exit node, which is commonly used to anonymize malicious traffic.");
+  if (ab.top_categories && ab.top_categories.length) pts.push("Recent abuse reports include: " + ab.top_categories.slice(0, 3).join(", ") + ".");
+  if (!pts.length) pts.push("No major threat-intelligence sources flag this IP; its infrastructure and reputation look normal.");
+  return pts.slice(0, 5);
+}
+
 function stakeholderPoints(d) {
+  if (d.kind === "ip") return ipPoints(d);
   const pts = [];
   // Known-bad / actor correlation first — strongest signals.
   if ((d.gsb && d.gsb.flagged) || (d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found))
@@ -604,13 +742,24 @@ function riskRating(d) {
 
 // Executive — C-suite risk brief: decision-oriented, minimal jargon.
 function fmtExecutive(d) {
-  const bottom = ({
+  const ip = d.kind === "ip";
+  const bottom = (ip ? {
+    "Likely Malicious": "This internet address is assessed as malicious and should be blocked. Traffic to or from it risks intrusion, data theft, or malware command-and-control.",
+    "Suspicious": "This address shows warning signs and should be treated with caution pending a brief investigation.",
+    "Low–Moderate": "This address carries limited risk. Normal monitoring is sufficient.",
+    "Likely Legitimate": "This address appears to be normal infrastructure and poses no significant risk at this time."
+  } : {
     "Likely Malicious": "This domain is assessed as malicious and should be blocked. Allowing it exposes staff to phishing, business email compromise, and potential financial loss.",
     "Suspicious": "This domain shows warning signs and should be treated with caution pending a brief investigation.",
     "Low–Moderate": "This domain carries limited risk. Normal precautions and monitoring are sufficient.",
     "Likely Legitimate": "This domain appears legitimate and poses no significant risk to the organization at this time."
   })[d.verdict] || "Manual review required.";
-  const decision = ({
+  const decision = (ip ? {
+    "Likely Malicious": "Authorize blocking at the firewall/EDR and hunt for existing connections to it.",
+    "Suspicious": "Approve monitoring and a short investigation; consider a temporary block.",
+    "Low–Moderate": "No immediate action; continue routine monitoring.",
+    "Likely Legitimate": "No action required."
+  } : {
     "Likely Malicious": "Authorize blocking at email/web gateways and notify potentially affected users.",
     "Suspicious": "Approve quarantine and a short investigation before any release.",
     "Low–Moderate": "No immediate action; continue routine monitoring.",
@@ -644,7 +793,12 @@ function fmtEndUser(d) {
     "Low–Moderate": "This is probably okay, but stay alert.",
     "Likely Legitimate": "✓ This looks SAFE."
   })[d.verdict] || "Unable to determine — check with IT Security.";
-  const plain = ({
+  const plain = (d.kind === "ip" ? {
+    "Likely Malicious": "This internet address is associated with malicious activity.",
+    "Suspicious": "Some details about this address look off.",
+    "Low–Moderate": "Nothing major stood out, but it's not clearly trusted either.",
+    "Likely Legitimate": "It looks like a normal internet address."
+  } : {
     "Likely Malicious": "It has the hallmarks of a scam or fake website.",
     "Suspicious": "Some details about it look off.",
     "Low–Moderate": "Nothing major stood out, but it's not clearly trusted either.",

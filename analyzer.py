@@ -324,15 +324,63 @@ def check_vt_domain(domain):
     return data.get("data", {}).get("attributes") if data else None
 
 
-def abuseipdb(ip):
+ABUSE_CATEGORIES = {
+    1: "DNS Compromise", 2: "DNS Poisoning", 3: "Fraud Orders", 4: "DDoS Attack",
+    5: "FTP Brute-Force", 6: "Ping of Death", 7: "Phishing", 8: "Fraud VoIP",
+    9: "Open Proxy", 10: "Web Spam", 11: "Email Spam", 12: "Blog Spam",
+    13: "VPN IP", 14: "Port Scan", 15: "Hacking", 16: "SQL Injection",
+    17: "Spoofing", 18: "Brute-Force", 19: "Bad Web Bot", 20: "Exploited Host",
+    21: "Web App Attack", 22: "SSH", 23: "IoT Targeted",
+}
+
+
+def abuseipdb(ip, verbose=False):
+    """AbuseIPDB /check. verbose=True also returns recent report detail so we can
+    surface the top abuse categories the IP has been reported for."""
     if not ip or not ABUSEIPDB_API_KEY:
         return None
+    params = {"ipAddress": ip, "maxAgeInDays": 90}
+    if verbose:
+        params["verbose"] = ""
     res = safe_get(
         "https://api.abuseipdb.com/api/v2/check",
         headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
-        params={"ipAddress": ip, "maxAgeInDays": 90},
+        params=params,
     )
-    return res.get("data") if res else None
+    data = res.get("data") if res else None
+    if not data:
+        return None
+    if verbose and data.get("reports"):
+        counts = {}
+        for rep in data["reports"]:
+            for cid in (rep.get("categories") or []):
+                counts[cid] = counts.get(cid, 0) + 1
+        top = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:6]
+        data["top_categories"] = [ABUSE_CATEGORIES.get(c, f"cat{c}") for c, _ in top]
+        data.pop("reports", None)   # drop the bulky raw array; we keep the summary
+    return data
+
+
+def check_vt_ip(ip):
+    """VirusTotal IP-address endpoint — reputation, ASN/owner, country, network."""
+    if not ip or not VT_API_KEY:
+        return None
+    data = safe_get(
+        f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
+        headers={"x-apikey": VT_API_KEY},
+    )
+    a = data.get("data", {}).get("attributes") if data else None
+    if not a:
+        return None
+    return {
+        "last_analysis_stats": a.get("last_analysis_stats", {}),
+        "reputation": a.get("reputation"),
+        "as_owner": a.get("as_owner"),
+        "asn": a.get("asn"),
+        "country": a.get("country"),
+        "network": a.get("network"),
+        "tags": a.get("tags") or [],
+    }
 
 
 def rdap_domain(domain):
@@ -508,6 +556,108 @@ def otx_lookup(domain):
         "adversaries": sorted(adversaries)[:6],
         "tags": sorted(tags)[:10],
     }
+
+
+def otx_ip(ip):
+    """OTX IPv4 — threat pulses (actors/malware) + passive DNS (domains hosted here)."""
+    if not ip:
+        return None
+    headers = {"User-Agent": USER_AGENT}
+    if OTX_API_KEY:
+        headers["X-OTX-API-KEY"] = OTX_API_KEY
+    gen = safe_get(
+        f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
+        headers=headers, timeout=10,
+    )
+    pdns = safe_get(
+        f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/passive_dns",
+        headers=headers, timeout=10,
+    )
+    if not gen and not pdns:
+        return None
+    families, adversaries, tags, names = set(), set(), set(), []
+    pi = (gen or {}).get("pulse_info") or {}
+    for p in (pi.get("pulses") or [])[:25]:
+        if p.get("name"):
+            names.append(p["name"])
+        for mf in (p.get("malware_families") or []):
+            nm = (mf.get("display_name") or mf.get("id")) if isinstance(mf, dict) else mf
+            if nm:
+                families.add(nm)
+        if p.get("adversary"):
+            adversaries.add(p["adversary"])
+        for t in (p.get("tags") or []):
+            tags.add(t)
+    passive = []
+    for rec in ((pdns or {}).get("passive_dns") or [])[:25]:
+        h = rec.get("hostname")
+        if h:
+            passive.append({"hostname": h, "last": (rec.get("last") or "")[:10],
+                            "first": (rec.get("first") or "")[:10]})
+    return {
+        "pulse_count": pi.get("count", 0),
+        "pulses": names[:6],
+        "malware_families": sorted(families)[:8],
+        "adversaries": sorted(adversaries)[:6],
+        "tags": sorted(tags)[:10],
+        "passive_dns": passive,
+        "passive_dns_count": ((pdns or {}).get("count")) or len(passive),
+    }
+
+
+def rdap_ip(ip):
+    """RDAP for an IP — network allocation, CIDR, org, abuse contact."""
+    data = safe_get(f"https://rdap.org/ip/{ip}", timeout=10)
+    if not data:
+        return None
+    cidr = None
+    for c in (data.get("cidr0_cidrs") or []):
+        pfx = c.get("v4prefix") or c.get("v6prefix")
+        if pfx:
+            cidr = f"{pfx}/{c.get('length')}"
+            break
+    org, abuse = None, None
+    for ent in (data.get("entities") or []):
+        roles = ent.get("roles", [])
+        vcard = ent.get("vcardArray", [[], []])
+        fn = None
+        for v in (vcard[1] if len(vcard) > 1 else []):
+            if v and v[0] == "fn":
+                fn = v[3]
+            if v and v[0] == "email" and "abuse" in str(v[3]).lower():
+                abuse = v[3]
+        if fn and ("registrant" in roles or "administrative" in roles) and not org:
+            org = fn
+        # nested abuse contact
+        for sub in (ent.get("entities") or []):
+            if "abuse" in sub.get("roles", []):
+                for v in (sub.get("vcardArray", [[], []])[1] if len(sub.get("vcardArray", [])) > 1 else []):
+                    if v and v[0] == "email":
+                        abuse = v[3]
+    return {
+        "name": data.get("name"),
+        "handle": data.get("handle"),
+        "cidr": cidr,
+        "range": f"{data.get('startAddress','?')} – {data.get('endAddress','?')}",
+        "country": data.get("country"),
+        "org": org,
+        "abuse_contact": abuse,
+    }
+
+
+def reverse_dns(ip):
+    """PTR (reverse DNS) lookup for an IP via DoH."""
+    if not ip:
+        return None
+    try:
+        octets = ip.split(".")
+        if len(octets) == 4:
+            name = ".".join(reversed(octets)) + ".in-addr.arpa"
+            recs = dns_lookup(name, "PTR")
+            return recs[0].rstrip(".") if recs else None
+    except Exception:
+        return None
+    return None
 
 
 def _ioc_host(value):
@@ -995,8 +1145,70 @@ def lookalike_check(registrable):
 # Verdict engine
 # --------------------------------------------------------------------------
 
+def _verdict_from(pts):
+    pts = min(pts, 100)
+    if pts >= 60:
+        return pts, "Likely Malicious"
+    if pts >= 30:
+        return pts, "Suspicious"
+    if pts >= 12:
+        return pts, "Low–Moderate"
+    return pts, "Likely Legitimate"
+
+
+def score_ip(result):
+    """IP-specific scoring — reputation/threat signals only, no domain/email concepts."""
+    pts, reasons = 0, []
+    abuse = result.get("abuse")
+    if abuse:
+        sc = abuse.get("abuseConfidenceScore", 0)
+        if sc >= 50:
+            pts += 35; reasons.append(f"AbuseIPDB confidence {sc}/100")
+        elif sc >= 20:
+            pts += 16; reasons.append(f"AbuseIPDB confidence {sc}/100")
+        if abuse.get("isTor"):
+            pts += 5; reasons.append("Tor exit node")
+        cats = abuse.get("top_categories") or []
+        if cats:
+            reasons.append("AbuseIPDB reports: " + ", ".join(cats[:3]))
+    vt = result.get("vt")
+    if vt:
+        s = vt.get("last_analysis_stats", {})
+        mal, susp = s.get("malicious", 0), s.get("suspicious", 0)
+        if mal >= 5:
+            pts += 45; reasons.append(f"VirusTotal: {mal} engines flag malicious")
+        elif mal >= 1:
+            pts += 22; reasons.append(f"VirusTotal: {mal} malicious / {susp} suspicious")
+        elif susp > 2:
+            pts += 10; reasons.append(f"VirusTotal: {susp} suspicious")
+    tf = result.get("threatfox")
+    if tf and tf.get("found"):
+        fam = ", ".join(tf.get("malware") or [])
+        pts += 35; reasons.append("ThreatFox: known malicious IOC" + (f" ({fam})" if fam else ""))
+    uh = result.get("urlhaus")
+    if uh and uh.get("found"):
+        pts += 30; reasons.append(f"URLhaus: hosts known malware ({uh.get('url_count','?')} URLs)")
+    otx = result.get("otx")
+    if otx and otx.get("pulse_count", 0) > 0:
+        named = (otx.get("malware_families") or []) + (otx.get("adversaries") or [])
+        if named:
+            pts += 20; reasons.append(f"AlienVault OTX: {otx['pulse_count']} reports ({', '.join(named[:3])})")
+        else:
+            pts += 8; reasons.append(f"AlienVault OTX: {otx['pulse_count']} community reports")
+    gn = result.get("greynoise")
+    if gn and gn.get("observed") and gn.get("classification") == "malicious":
+        pts += 15; reasons.append("GreyNoise: classified malicious")
+    info = result.get("info")
+    if info and info.get("status") == "success" and info.get("proxy"):
+        pts += 8; reasons.append("Flagged as proxy / VPN / Tor")
+    pts, verdict = _verdict_from(pts)
+    return {"score": pts, "verdict": verdict, "reasons": reasons, "bec": []}
+
+
 def score(result):
     """Weighted risk scoring → verdict + reasons + BEC tags."""
+    if result.get("is_ip"):
+        return score_ip(result)
     pts = 0
     reasons = []
     bec = []
@@ -1179,10 +1391,45 @@ def analyze(raw_input):
 
     domain = parsed["domain"]
     is_ip = parsed.get("is_ip", False)
-
-    # Resolve first (other lookups need the IP).
     ip = domain if is_ip else resolve_ip(domain)
 
+    result = _analyze_ip(parsed, ip, raw_input) if is_ip \
+        else _analyze_domain(parsed, domain, ip, raw_input)
+
+    result.update(score(result))
+    result["ticket_summary"] = build_summary(result)
+    return result
+
+
+def _analyze_ip(parsed, ip, raw_input):
+    """Dedicated IP path — correct IP endpoints, no domain/email checks."""
+    futures = {
+        "vt":        _executor.submit(check_vt_ip, ip),
+        "abuse":     _executor.submit(abuseipdb, ip, True),
+        "otx":       _executor.submit(otx_ip, ip),
+        "rdap_ip":   _executor.submit(rdap_ip, ip),
+        "info":      _executor.submit(ip_info, ip),
+        "shodan":    _executor.submit(shodan_internetdb, ip),
+        "greynoise": _executor.submit(greynoise_lookup, ip),
+        "threatfox": _executor.submit(threatfox_lookup, ip, ip),
+        "urlhaus":   _executor.submit(urlhaus_host, ip),
+        "ptr":       _executor.submit(reverse_dns, ip),
+    }
+    res = {k: f.result() for k, f in futures.items()}
+    return {
+        "ok": True, "kind": "ip", "input": raw_input,
+        "domain": ip, "registrable": ip, "ip": ip, "is_ip": True,
+        "email": None, "url": None,
+        "defanged": defang(parsed["normalized"]),
+        "vt": res["vt"], "abuse": res["abuse"], "otx": res["otx"],
+        "rdap_ip": res["rdap_ip"], "info": res["info"],
+        "shodan": res["shodan"], "greynoise": res["greynoise"],
+        "threatfox": res["threatfox"], "urlhaus": res["urlhaus"],
+        "ptr": res["ptr"],
+    }
+
+
+def _analyze_domain(parsed, domain, ip, raw_input):
     futures = {
         "a":     _executor.submit(dns_lookup, domain, "A"),
         "aaaa":  _executor.submit(dns_lookup, domain, "AAAA"),
@@ -1238,7 +1485,7 @@ def analyze(raw_input):
         "email": parsed["email"],
         "url": parsed["url"],
         "ip": ip,
-        "is_ip": is_ip,
+        "is_ip": False,
         "defanged": defang(parsed["normalized"]),
         # raw data
         "a": res["a"], "aaaa": res["aaaa"], "mx": res["mx"],
@@ -1262,14 +1509,13 @@ def analyze(raw_input):
         "freemail": reg_dom in FREEMAIL_DOMAINS,
         "disposable": reg_dom in DISPOSABLE_DOMAINS,
     }
-
-    result.update(score(result))
-    result["ticket_summary"] = build_summary(result)
     return result
 
 
 def build_summary(r):
     """Analyst-ready, copy-paste block (defanged) for case notes."""
+    if r.get("is_ip"):
+        return build_ip_summary(r)
     lines = []
     lines.append(f"IOC:      {r['defanged']}  ({r['kind']})")
     lines.append(f"Verdict:  {r['verdict']}  (risk {r['score']}/100)")
@@ -1289,6 +1535,34 @@ def build_summary(r):
                  f"  |  DKIM: {', '.join(r['dkim']) if r.get('dkim') else 'none found'}")
     if r.get("bec"):
         lines.append("BEC flags: " + "; ".join(r["bec"]))
+    if r.get("reasons"):
+        lines.append("Signals:  " + " | ".join(r["reasons"]))
+    return "\n".join(lines)
+
+
+def build_ip_summary(r):
+    lines = []
+    info = r.get("info") or {}
+    ab = r.get("abuse") or {}
+    lines.append(f"IOC:      {r['defanged']}  (ip)")
+    lines.append(f"Verdict:  {r['verdict']}  (risk {r['score']}/100)")
+    lines.append(f"Network:  {info.get('as','?')}  ·  {info.get('country','?')}"
+                 f"  ·  {info.get('org') or info.get('isp','?')}")
+    rip = r.get("rdap_ip") or {}
+    if rip.get("cidr") or rip.get("name"):
+        lines.append(f"Alloc:    {rip.get('name','?')}  {rip.get('cidr') or ''}".rstrip())
+    if r.get("ptr"):
+        lines.append(f"rDNS:     {r['ptr']}")
+    if ab:
+        extra = " · Tor" if ab.get("isTor") else ""
+        lines.append(f"AbuseIPDB: {ab.get('abuseConfidenceScore',0)}/100"
+                     f"  ·  {ab.get('usageType','?')}{extra}"
+                     f"  ·  {ab.get('totalReports',0)} reports")
+        if ab.get("top_categories"):
+            lines.append("Reported: " + ", ".join(ab["top_categories"]))
+    otx = r.get("otx") or {}
+    if otx.get("passive_dns_count"):
+        lines.append(f"Passive DNS: {otx['passive_dns_count']} domains have resolved here")
     if r.get("reasons"):
         lines.append("Signals:  " + " | ".join(r["reasons"]))
     return "\n".join(lines)
