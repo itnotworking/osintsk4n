@@ -226,7 +226,7 @@ header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
 }
 
 /* human-readable brief */
-.brief { padding: 24px 0 6px; border-top: 2px solid var(--divider); }
+.brief { padding: 24px 0 24px; border-top: 2px solid var(--divider); }
 .brief p { margin: 0; font-size: 14.5px; line-height: 1.8; color: var(--text); max-width: 940px; }
 .signals ul { list-style: none; margin: 0; padding: 0;
   columns: 2; column-gap: 48px; }
@@ -319,7 +319,7 @@ a:hover { color: #b9c0f0; text-decoration: underline; }
 .livebtn:hover { border-color: var(--accent); background: var(--accent-soft); }
 
 /* urlscan: full-width section with two-column (details | screenshot) */
-.us-section { margin-top: 40px; padding-top: 34px; border-top: 2px solid var(--divider); }
+.us-section { margin-top: 44px; padding-top: 0; }   /* no top divider — separated by spacing only */
 .us-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 36px; align-items: start; }
 .us-info .kv { font-size: 13px; }
 .us-info .scanrow { margin-top: 8px; }

@@ -1028,7 +1028,7 @@ function fmtExecutive(d) {
   L.push("Why:");
   stakeholderPoints(d).slice(0, 3).forEach(function (p) { L.push("• " + p); });
   L.push("");
-  L.push("Recommended decision: " + decision);
+  L.push("Recommended action: " + decision);
   L.push("");
   L.push("Prepared by SC4N automated triage · " + new Date().toISOString());
   return L.join("\n");
@@ -1073,7 +1073,7 @@ function fmtEndUser(d) {
   L.push("Result: " + result);
   if (plain) L.push("In plain terms: " + plain);
   L.push("");
-  L.push("What you should do:");
+  L.push("Recommended action — what you should do:");
   if (danger) {
     L.push("• Do NOT click any links or open attachments.");
     L.push("• Do NOT reply or enter any passwords or personal information.");
