@@ -1187,15 +1187,17 @@ function saveRecent(d) {
 function renderRecent() {
   const el = $("recent");
   if (!el) return;
-  const list = getRecent();
+  const list = getRecent().slice(0, 5);
   if (!list.length) { el.innerHTML = ""; return; }
   const chips = list.map(function (r) {
     const col = ({ "low": "#57b083", "lowmod": "#d4a24a", "suspicious": "#d4a24a", "malicious": "#e96a6a" })[verdictClass(r.v)] || "#8d8d97";
     return '<span class="rchip" title="' + esc(r.v) + ' · ' + r.s + '/100" onclick="runRecent(' + JSON.stringify(r.t).replace(/"/g, "&quot;") + ')">' +
       '<span class="rdot" style="background:' + col + '"></span>' +
-      '<span class="rt">' + esc((r.label || r.t).slice(0, 34)) + '</span></span>';
+      '<span class="rt">' + esc((r.label || r.t).slice(0, 24)) + '</span></span>';
   }).join("");
-  el.innerHTML = '<span class="rlabel">Recent</span>' + chips + '<span class="rclear" onclick="clearRecent()">clear</span>';
+  el.innerHTML = '<span class="rlabel">Recent</span>' +
+    '<span class="rchips">' + chips + '</span>' +
+    '<span class="rclear" onclick="clearRecent()">clear</span>';
 }
 function runRecent(t) { $("target").value = t; analyze(); }
 function clearRecent() { try { localStorage.removeItem(RECENT_KEY); } catch (e) {} renderRecent(); }
