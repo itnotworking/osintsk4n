@@ -86,14 +86,15 @@ header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
 
 /* header threat ticker */
 .ticker {
-  flex: 1; min-width: 0; height: 22px; overflow: hidden; margin: 0 28px; position: relative;
+  flex: 1; min-width: 0; height: 32px; overflow: hidden; margin: 0 28px; position: relative;
+  display: flex; align-items: center;   /* vertically center the scrolling track */
   -webkit-mask: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
   mask: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
 }
-.ticker-track { display: inline-flex; align-items: center; gap: 36px; white-space: nowrap; will-change: transform; animation: tickerScroll 80s linear infinite; }
+.ticker-track { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 36px; white-space: nowrap; will-change: transform; animation: tickerScroll 80s linear infinite; }
 .ticker:hover .ticker-track { animation-play-state: paused; }
 @keyframes tickerScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-.tk-item { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.tk-item { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; line-height: 1; }
 .tk-item a { color: var(--muted); }
 .tk-item a:hover { color: var(--text); }
 .tk-tag {
