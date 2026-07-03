@@ -189,16 +189,19 @@ header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
   padding-bottom: 26px;
 }
 .verdict .score-ring {
-  width: 58px; height: 58px; border-radius: 50%; flex: 0 0 auto;
-  display: grid; place-items: center; font-size: 16px; font-weight: 700;
-  background: conic-gradient(var(--ring) calc(var(--pct) * 1%), rgba(255,255,255,0.07) 0);
-  animation: ringFill .95s cubic-bezier(.22,1,.36,1) both;
+  width: 64px; height: 64px; border-radius: 50%; flex: 0 0 auto;
+  display: grid; place-items: center; font-size: 17px; font-weight: 800;
+  background: conic-gradient(var(--ring) calc(var(--pct) * 1%), rgba(255,255,255,0.09) 0);
+  animation: ringFill 1s cubic-bezier(.22,1,.36,1) both;
 }
 /* registered custom property lets the conic-gradient animate its fill on reveal */
-@property --pct { syntax: "<number>"; initial-value: 0; inherits: false; }
+@property --pct { syntax: "<number>"; initial-value: 0; inherits: true; }
 @keyframes ringFill { from { --pct: 0; } }
 @media (prefers-reduced-motion: reduce) { .verdict .score-ring { animation: none; } }
-.verdict .score-ring i { width: 46px; height: 46px; border-radius: 50%; background: var(--bg); display: grid; place-items: center; font-style: normal; }
+.verdict .score-ring i {
+  width: 48px; height: 48px; border-radius: 50%; background: var(--bg);
+  display: grid; place-items: center; font-style: normal; color: var(--ring);
+}
 .verdict .v-main { flex: 1; min-width: 220px; }
 .verdict .v-main .label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 2px; color: var(--faint); }
 .verdict .v-main .val { font-size: 28px; font-weight: 700; margin: 4px 0; letter-spacing: .2px; }

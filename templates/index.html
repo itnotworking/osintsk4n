@@ -162,16 +162,21 @@ function lockTicketHeight() {
 function verdictClass(v) {
   return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious"})[v] || "low";
 }
-function ringColor(v) {
-  return ({"low":"#57b083","lowmod":"#d4a24a","suspicious":"#d4a24a","malicious":"#e96a6a"})[verdictClass(v)];
+// Ring colour escalates with the actual score — more severe the higher it goes.
+function ringColor(score) {
+  if (score >= 80) return "#ff2d2d";   // severe red
+  if (score >= 60) return "#f85149";   // red
+  if (score >= 30) return "#f0883e";   // orange
+  if (score >= 12) return "#e3b341";   // amber
+  return "#3fb950";                     // green
 }
 
 function verdictBanner(d) {
   const cls = verdictClass(d.verdict);
   const tags = (d.bec || []).map(t => '<span class="tag bec">BEC · ' + esc(t) + '</span>').join("");
   return '' +
-    '<div class="verdict ' + cls + ' fade-in" style="--pct:' + d.score + ';--ring:' + ringColor(d.verdict) + '">' +
-      '<div class="score-ring"><i>' + d.score + '</i></div>' +
+    '<div class="verdict ' + cls + ' fade-in">' +
+      '<div class="score-ring" style="--pct:' + d.score + ';--ring:' + ringColor(d.score) + '"><i>' + d.score + '</i></div>' +
       '<div class="v-main">' +
         '<div class="label">Verdict</div>' +
         '<div class="val">' + esc(d.verdict) + '</div>' +
