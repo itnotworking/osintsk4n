@@ -149,14 +149,13 @@ function render(d) {
 function lockTicketHeight() {
   const t = $("ticket");
   if (!t) return;
-  const cur = t.textContent;
   t.style.minHeight = "";
   let max = 0;
   ["security", "executive", "enduser"].forEach(function (f) {
-    t.textContent = splitReport(ticketFmts[f] || "").body;
+    t.innerHTML = ticketBody(ticketFmts[f] || "");
     if (t.offsetHeight > max) max = t.offsetHeight;
   });
-  t.textContent = cur;
+  t.innerHTML = ticketBody(ticketFmts.security);   // restore the default (active) report, styled
   t.style.minHeight = max + "px";
 }
 
@@ -737,13 +736,11 @@ function buildTicket(d) {
     return '<button class="ttab' + (i === 0 ? ' active' : '') + '" data-fmt="' + t[0] +
       '" onclick="selectTicket(\'' + t[0] + '\')">' + t[1] + '</button>';
   }).join("");
-  const first = splitReport(ticketFmts.security);
   return '<div class="ticket fade-in"><div class="ticket-h">' +
     '<span class="thd">Report Summary</span>' +
     '<div class="ticket-tabs">' + tabs +
     '<button class="copybtn" onclick="copySummary()">Copy</button></div></div>' +
-    '<div class="report-title" id="reportTitle">' + esc(first.title) + '</div>' +
-    '<pre id="ticket" class="ticket-body">' + esc(first.body) + '</pre></div>';
+    '<pre id="ticket" class="ticket-body">' + ticketBody(ticketFmts.security) + '</pre></div>';
 }
 
 // The first line of each report is its title (e.g. "SECURITY TEAM — TRIAGE REPORT").
@@ -753,12 +750,15 @@ function splitReport(text) {
   while (lines.length && lines[0].trim() === "") lines.shift();
   return { title: title, body: lines.join("\n") };
 }
+// Render inside the report box with the title line highlighted (kept in the box).
+function ticketBody(text) {
+  const r = splitReport(text);
+  return '<span class="rt-title">' + esc(r.title) + '</span>\n\n' + esc(r.body);
+}
 
 function selectTicket(fmt) {
-  const r = splitReport(ticketFmts[fmt] || "");
-  const t = $("ticket"), tt = $("reportTitle");
-  if (t) t.textContent = r.body;
-  if (tt) tt.textContent = r.title;
+  const t = $("ticket");
+  if (t) t.innerHTML = ticketBody(ticketFmts[fmt] || "");
   document.querySelectorAll('.ttab').forEach(function (b) {
     b.classList.toggle('active', b.getAttribute('data-fmt') === fmt);
   });
@@ -1087,9 +1087,7 @@ function fmtEndUser(d) {
 
 function copySummary() {
   const t = $("ticket");
-  const title = ($("reportTitle") || {}).textContent || "";
-  const full = (title ? title + "\n\n" : "") + (t ? t.textContent : "");
-  if (t) navigator.clipboard.writeText(full).then(() => {
+  if (t) navigator.clipboard.writeText(t.textContent).then(() => {
     const b = document.querySelector('.copybtn');
     if (b) { const o = b.textContent; b.textContent = "Copied ✓"; setTimeout(() => b.textContent = o, 1400); }
   });
@@ -1182,7 +1180,7 @@ function saveRecent(d) {
   if (!d || !d.ok) return;
   let list = getRecent().filter(r => r.t !== d.input);
   list.unshift({ t: d.input, label: d.defanged || d.input, k: d.kind, v: d.verdict, s: d.score });
-  list = list.slice(0, 12);
+  list = list.slice(0, 5);
   try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch (e) {}
   renderRecent();
 }
