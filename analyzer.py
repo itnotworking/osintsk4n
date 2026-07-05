@@ -530,13 +530,14 @@ def hybrid_analysis(file_hash):
     """Hybrid Analysis (Falcon Sandbox) — sandbox verdict/threat score/family for a hash."""
     if not file_hash or not HYBRID_API_KEY:
         return None
+    headers = {"api-key": HYBRID_API_KEY, "User-Agent": "Falcon Sandbox", "accept": "application/json"}
+    # /search/hash was deprecated for keys newer than v2.35.0; /overview/{sha256} is the replacement.
     try:
-        r = requests.post(
-            "https://hybrid-analysis.com/api/v2/search/terms",  # /search/hash deprecated for keys newer than v2.35.0
-            headers={"api-key": HYBRID_API_KEY, "User-Agent": "Falcon Sandbox",
-                     "accept": "application/json"},
-            data={"hash": file_hash}, timeout=15,
+        r = requests.get(
+            "https://hybrid-analysis.com/api/v2/overview/" + file_hash, headers=headers, timeout=15,
         )
+        if r.status_code == 404:
+            return {"found": False}
         if r.status_code != 200:
             msg = ""
             try:
@@ -544,26 +545,12 @@ def hybrid_analysis(file_hash):
             except Exception:
                 pass
             return {"error": msg or ("HTTP " + str(r.status_code))}
-        payload = r.json()
+        ov = r.json()
     except Exception:
         return {"error": "request failed"}
-    # /search/terms wraps hits in {"count", "result": [...]}; older shape was a bare array
-    arr = payload.get("result") if isinstance(payload, dict) else payload
-    if not arr:
+    if not ov:
         return {"found": False}
-    best = max(arr, key=lambda x: (x.get("threat_score") or 0))
-    return {
-        "found": True,
-        "verdict": best.get("verdict"),
-        "threat_score": best.get("threat_score"),
-        "av_detect": best.get("av_detect"),
-        "family": best.get("vx_family"),
-        "type": best.get("type") or best.get("type_short"),
-        "tags": (best.get("tags") or best.get("classification_tags") or [])[:8],
-        "total_signatures": best.get("total_signatures"),
-        "environment": best.get("environment_description"),
-        "analysis_time": (best.get("analysis_start_time") or "")[:10],
-    }
+    return {"found": True, "_debug_keys": sorted(ov.keys()), "_debug": ov}
 
 
 def triage_lookup(file_hash):
