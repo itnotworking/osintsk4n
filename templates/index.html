@@ -304,7 +304,8 @@ function sandboxBlock(d) {
   let html = "";
   // Hybrid Analysis
   if (hy) {
-    if (!hy.found) html += kvrow("Hybrid Analysis", "not sandboxed", "");
+    if (hy.error) html += kvrow("Hybrid Analysis", hy.error, "warn");
+    else if (!hy.found) html += kvrow("Hybrid Analysis", "not sandboxed", "");
     else {
       const v = (hy.verdict || "").toLowerCase(), ts = hy.threat_score;
       html += kvrow("Hybrid verdict", (hy.verdict || "?"), (v === "malicious" ? "bad" : (v === "suspicious" ? "warn" : "good")), "Hybrid Analysis (Falcon Sandbox) detonated this file; verdict is its behavioral assessment.") +

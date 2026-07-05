@@ -538,10 +538,15 @@ def hybrid_analysis(file_hash):
             data={"hash": file_hash}, timeout=15,
         )
         if r.status_code != 200:
-            return None
+            msg = ""
+            try:
+                msg = (r.json() or {}).get("message") or ""
+            except Exception:
+                pass
+            return {"error": msg or ("HTTP " + str(r.status_code))}
         arr = r.json()
     except Exception:
-        return None
+        return {"error": "request failed"}
     if not arr:
         return {"found": False}
     best = max(arr, key=lambda x: (x.get("threat_score") or 0))
