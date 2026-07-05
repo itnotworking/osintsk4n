@@ -313,8 +313,7 @@ function sandboxBlock(d) {
         (hy.family ? kvrow("Family", hy.family, "bad") : "") +
         (hy.av_detect != null ? kvrow("AV detection", hy.av_detect + "%") : "") +
         (hy.type ? kvrow("File type", hy.type) : "") +
-        (hy.filename ? kvrow("Observed name", hy.filename) : "") +
-        (hy.tags && hy.tags.length ? kvrow("Tags", hy.tags.join(", ")) : "");
+        (hy.filename ? kvrow("Observed name", hy.filename) : "");
     }
   } else if (keyOn('hybrid')) html += kvrow("Hybrid Analysis", "unavailable", "");
   // Hatching Triage

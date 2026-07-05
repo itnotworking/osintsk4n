@@ -553,13 +553,8 @@ def hybrid_analysis(file_hash):
         return {"error": "request failed"}
     if not ov:
         return {"found": False}
-    # normalize tags (overview may return strings or {tag: ...} objects)
-    tags = []
-    for t in (ov.get("tags") or []):
-        if isinstance(t, dict):
-            t = t.get("tag") or t.get("name")
-        if isinstance(t, str) and t:
-            tags.append(t)
+    # NOTE: overview "tags" is HA's full tag taxonomy (starts with junk "tag", then every
+    # family/tactic in their DB), NOT this sample's tags — unusable, so we omit it.
     ftype = ov.get("type") or ov.get("type_short")
     if isinstance(ftype, list):
         ftype = ", ".join(str(x) for x in ftype)
@@ -572,7 +567,6 @@ def hybrid_analysis(file_hash):
         "av_detect": ov.get("multiscan_result"),
         "family": ov.get("vx_family"),
         "type": ftype,
-        "tags": tags[:8],
         "filename": ov.get("last_file_name"),
         "analysis_time": (ov.get("analysis_start_time") or ov.get("submitted_at") or "")[:10],
     }
