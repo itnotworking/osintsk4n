@@ -305,7 +305,7 @@ function sandboxBlock(d) {
   // Hybrid Analysis
   if (hy) {
     if (hy.error) html += kvrow("Hybrid Analysis", hy.error, "warn");
-    else if (!hy.found) html += kvrow("Hybrid Analysis", "not sandboxed", "");
+    else if (!hy.found) html += kvrow("Hybrid Analysis", hy.note || "not sandboxed", "");
     else {
       const v = (hy.verdict || "").toLowerCase(), ts = hy.threat_score;
       html += kvrow("Hybrid verdict", (hy.verdict || "?"), (v === "malicious" ? "bad" : (v === "suspicious" ? "warn" : "good")), "Hybrid Analysis (Falcon Sandbox) detonated this file; verdict is its behavioral assessment.") +
@@ -313,6 +313,7 @@ function sandboxBlock(d) {
         (hy.family ? kvrow("Family", hy.family, "bad") : "") +
         (hy.av_detect != null ? kvrow("AV detection", hy.av_detect + "%") : "") +
         (hy.type ? kvrow("File type", hy.type) : "") +
+        (hy.filename ? kvrow("Observed name", hy.filename) : "") +
         (hy.tags && hy.tags.length ? kvrow("Tags", hy.tags.join(", ")) : "");
     }
   } else if (keyOn('hybrid')) html += kvrow("Hybrid Analysis", "unavailable", "");

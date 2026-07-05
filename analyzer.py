@@ -530,8 +530,11 @@ def hybrid_analysis(file_hash):
     """Hybrid Analysis (Falcon Sandbox) — sandbox verdict/threat score/family for a hash."""
     if not file_hash or not HYBRID_API_KEY:
         return None
+    # /overview/{sha256} (the replacement for the deprecated /search/hash) only accepts SHA256.
+    # VT + MalwareBazaar still cover MD5/SHA1, so degrade gracefully rather than erroring.
+    if len(file_hash) != 64:
+        return {"found": False, "note": "Hybrid Analysis lookup needs a SHA256 hash."}
     headers = {"api-key": HYBRID_API_KEY, "User-Agent": "Falcon Sandbox", "accept": "application/json"}
-    # /search/hash was deprecated for keys newer than v2.35.0; /overview/{sha256} is the replacement.
     try:
         r = requests.get(
             "https://hybrid-analysis.com/api/v2/overview/" + file_hash, headers=headers, timeout=15,
@@ -550,7 +553,29 @@ def hybrid_analysis(file_hash):
         return {"error": "request failed"}
     if not ov:
         return {"found": False}
-    return {"found": True, "_debug_keys": sorted(ov.keys()), "_debug": ov}
+    # normalize tags (overview may return strings or {tag: ...} objects)
+    tags = []
+    for t in (ov.get("tags") or []):
+        if isinstance(t, dict):
+            t = t.get("tag") or t.get("name")
+        if isinstance(t, str) and t:
+            tags.append(t)
+    ftype = ov.get("type") or ov.get("type_short")
+    if isinstance(ftype, list):
+        ftype = ", ".join(str(x) for x in ftype)
+    if ftype and len(ftype) > 60:
+        ftype = ftype[:60].rstrip(" ,") + "…"
+    return {
+        "found": True,
+        "verdict": ov.get("verdict"),
+        "threat_score": ov.get("threat_score"),
+        "av_detect": ov.get("multiscan_result"),
+        "family": ov.get("vx_family"),
+        "type": ftype,
+        "tags": tags[:8],
+        "filename": ov.get("last_file_name"),
+        "analysis_time": (ov.get("analysis_start_time") or ov.get("submitted_at") or "")[:10],
+    }
 
 
 def triage_lookup(file_hash):
