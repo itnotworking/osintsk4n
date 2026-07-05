@@ -532,7 +532,7 @@ def hybrid_analysis(file_hash):
         return None
     try:
         r = requests.post(
-            "https://hybrid-analysis.com/api/v2/search/hash",   # non-www (www 301s & drops POST body)
+            "https://hybrid-analysis.com/api/v2/search/terms",  # /search/hash deprecated for keys newer than v2.35.0
             headers={"api-key": HYBRID_API_KEY, "User-Agent": "Falcon Sandbox",
                      "accept": "application/json"},
             data={"hash": file_hash}, timeout=15,
@@ -544,9 +544,11 @@ def hybrid_analysis(file_hash):
             except Exception:
                 pass
             return {"error": msg or ("HTTP " + str(r.status_code))}
-        arr = r.json()
+        payload = r.json()
     except Exception:
         return {"error": "request failed"}
+    # /search/terms wraps hits in {"count", "result": [...]}; older shape was a bare array
+    arr = payload.get("result") if isinstance(payload, dict) else payload
     if not arr:
         return {"found": False}
     best = max(arr, key=lambda x: (x.get("threat_score") or 0))
