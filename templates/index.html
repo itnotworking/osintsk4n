@@ -290,10 +290,44 @@ function cards(d) {
 function hashCards(d) {
   const out = [];
   out.push(card("File Analysis (VirusTotal)", vtFileBlock(d.vt_file, d)));
+  out.push(card("Sandbox Analysis", sandboxBlock(d)));
   out.push(card("MalwareBazaar", mbBlock(d.mb)));
   out.push(card("Threat Feeds", hashThreatBlock(d)));
   out.push(card("Hash", hashIdsBlock(d)));
   return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
+}
+
+// Hybrid Analysis + Hatching Triage sandbox verdicts
+function sandboxBlock(d) {
+  const hy = d.hybrid, tr = d.triage;
+  if (!hy && !tr) return muted((keyOn('hybrid') || keyOn('triage')) ? 'No sandbox data.' : 'Set HYBRID_API_KEY / TRIAGE_API_KEY for sandbox analysis.');
+  let html = "";
+  // Hybrid Analysis
+  if (hy) {
+    if (!hy.found) html += kvrow("Hybrid Analysis", "not sandboxed", "");
+    else {
+      const v = (hy.verdict || "").toLowerCase(), ts = hy.threat_score;
+      html += kvrow("Hybrid verdict", (hy.verdict || "?"), (v === "malicious" ? "bad" : (v === "suspicious" ? "warn" : "good")), "Hybrid Analysis (Falcon Sandbox) detonated this file; verdict is its behavioral assessment.") +
+        (ts != null ? kvrow("Threat score", ts + "/100", ts >= 70 ? "bad" : (ts >= 30 ? "warn" : "good")) : "") +
+        (hy.family ? kvrow("Family", hy.family, "bad") : "") +
+        (hy.av_detect != null ? kvrow("AV detection", hy.av_detect + "%") : "") +
+        (hy.type ? kvrow("File type", hy.type) : "") +
+        (hy.tags && hy.tags.length ? kvrow("Tags", hy.tags.join(", ")) : "");
+    }
+  } else if (keyOn('hybrid')) html += kvrow("Hybrid Analysis", "unavailable", "");
+  // Hatching Triage
+  if (tr) {
+    if (tr === true || !tr.found) html += kvrow("Triage", "not sandboxed", "");
+    else {
+      const sc = tr.score;
+      if (hy) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">Hatching Triage</div>';
+      html += (sc != null ? kvrow("Triage score", sc + "/10", sc >= 8 ? "bad" : (sc >= 5 ? "warn" : "good"), "Hatching Triage sandbox score (0-10); 8+ is malicious.") : kvrow("Triage", "analyzed")) +
+        (tr.family && tr.family.length ? kvrow("Family", tr.family.join(", "), "bad") : "") +
+        (tr.tags && tr.tags.length ? kvrow("Tags", tr.tags.join(", ")) : "") +
+        (tr.url ? '<div class="scanrow" style="margin-top:6px"><a href="' + esc(tr.url) + '" target="_blank" rel="noopener">View Triage report ↗</a></div>' : "");
+    }
+  } else if (keyOn('triage')) html += kvrow("Triage", "unavailable", "");
+  return html;
 }
 
 function vtFileBlock(v, d) {
@@ -931,6 +965,9 @@ function hashPoints(d) {
     pts.push("This file is not known to VirusTotal — it may be new/unseen, so absence of detections is not proof it is safe.");
   }
   if (mb.found) pts.push("It is a confirmed malware sample in abuse.ch's MalwareBazaar" + (mb.signature ? " (" + mb.signature + ")" : "") + ".");
+  const hy = d.hybrid || {}, tr = d.triage || {};
+  if (hy.found && ((hy.verdict || "").toLowerCase() === "malicious" || (hy.threat_score || 0) >= 70)) pts.push("A malware sandbox (Hybrid Analysis) detonated this file and assessed it as malicious" + (hy.family ? " (" + hy.family + ")" : "") + ".");
+  if (tr.found && (tr.score || 0) >= 8) pts.push("A second sandbox (Hatching Triage) also scored this file as malicious" + (tr.family && tr.family.length ? " (" + tr.family.join(", ") + ")" : "") + ".");
   if (d.threatfox && d.threatfox.found) pts.push("It matches a known malicious indicator in ThreatFox.");
   if (!pts.length) pts.push("No malware databases flag this file.");
   return pts.slice(0, 5);

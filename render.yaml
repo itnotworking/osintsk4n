@@ -22,3 +22,7 @@ services:
         sync: false
       - key: IPQS_API_KEY
         sync: false
+      - key: HYBRID_API_KEY
+        sync: false
+      - key: TRIAGE_API_KEY
+        sync: false

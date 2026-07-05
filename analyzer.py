@@ -28,6 +28,8 @@ ABUSECH_API_KEY = os.environ.get("ABUSECH_API_KEY", "")
 GSB_API_KEY = os.environ.get("GSB_API_KEY", "")
 EMAILREP_API_KEY = os.environ.get("EMAILREP_API_KEY", "")
 IPQS_API_KEY = os.environ.get("IPQS_API_KEY", "")
+HYBRID_API_KEY = os.environ.get("HYBRID_API_KEY", "")
+TRIAGE_API_KEY = os.environ.get("TRIAGE_API_KEY", "")
 
 USER_AGENT = "osintsk4n/2.0 (SOC triage)"
 _executor = ThreadPoolExecutor(max_workers=16)
@@ -521,6 +523,68 @@ def check_vt_file(file_hash):
         "times_submitted": a.get("times_submitted"),
         "tags": a.get("tags") or [],
         "sha256": a.get("sha256"), "md5": a.get("md5"), "sha1": a.get("sha1"),
+    }
+
+
+def hybrid_analysis(file_hash):
+    """Hybrid Analysis (Falcon Sandbox) — sandbox verdict/threat score/family for a hash."""
+    if not file_hash or not HYBRID_API_KEY:
+        return None
+    try:
+        r = requests.post(
+            "https://hybrid-analysis.com/api/v2/search/hash",   # non-www (www 301s & drops POST body)
+            headers={"api-key": HYBRID_API_KEY, "User-Agent": "Falcon Sandbox",
+                     "accept": "application/json"},
+            data={"hash": file_hash}, timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+        arr = r.json()
+    except Exception:
+        return None
+    if not arr:
+        return {"found": False}
+    best = max(arr, key=lambda x: (x.get("threat_score") or 0))
+    return {
+        "found": True,
+        "verdict": best.get("verdict"),
+        "threat_score": best.get("threat_score"),
+        "av_detect": best.get("av_detect"),
+        "family": best.get("vx_family"),
+        "type": best.get("type") or best.get("type_short"),
+        "tags": (best.get("tags") or best.get("classification_tags") or [])[:8],
+        "total_signatures": best.get("total_signatures"),
+        "environment": best.get("environment_description"),
+        "analysis_time": (best.get("analysis_start_time") or "")[:10],
+    }
+
+
+def triage_lookup(file_hash):
+    """Hatching Triage (tria.ge) — sandbox score/family/tags for a hash."""
+    if not file_hash or not TRIAGE_API_KEY:
+        return None
+    headers = {"Authorization": "Bearer " + TRIAGE_API_KEY, "User-Agent": USER_AGENT}
+    data = safe_get("https://tria.ge/api/v0/search", headers=headers,
+                    params={"query": file_hash}, timeout=12)
+    samples = (data or {}).get("data") or []
+    if not samples:
+        return {"found": False}
+    sid = samples[0].get("id")
+    if not sid:
+        return {"found": False}
+    ov = safe_get(f"https://tria.ge/api/v0/samples/{sid}/overview.json",
+                  headers=headers, timeout=12)
+    analysis = (ov or {}).get("analysis") or {}
+    fam = analysis.get("family") or []
+    if not fam:
+        for tgt in ((ov or {}).get("targets") or []):
+            fam += (tgt.get("family") or [])
+    return {
+        "found": True, "id": sid,
+        "score": analysis.get("score"),
+        "family": sorted(set(fam))[:6],
+        "tags": (analysis.get("tags") or [])[:8],
+        "url": f"https://tria.ge/{sid}",
     }
 
 
@@ -1470,6 +1534,26 @@ def score_hash(result):
         pts += 30
         fam = ", ".join(tf.get("malware") or [])
         reasons.append("ThreatFox: known malicious IOC" + (f" ({fam})" if fam else ""))
+    hy = result.get("hybrid")
+    if hy and hy.get("found"):
+        ts = hy.get("threat_score") or 0
+        v = (hy.get("verdict") or "").lower()
+        if v == "malicious" or ts >= 70:
+            pts += 45
+            reasons.append("Hybrid Analysis: malicious" + (f" ({hy.get('family')})" if hy.get("family") else "") + (f", threat score {ts}" if ts else ""))
+        elif v == "suspicious" or ts >= 30:
+            pts += 22
+            reasons.append(f"Hybrid Analysis: suspicious (threat score {ts})")
+    tr = result.get("triage")
+    if tr and tr.get("found"):
+        sc = tr.get("score") or 0
+        if sc >= 8:
+            pts += 45
+            fam = ", ".join(tr.get("family") or [])
+            reasons.append("Hatching Triage: malicious" + (f" ({fam})" if fam else "") + f", score {sc}/10")
+        elif sc >= 5:
+            pts += 22
+            reasons.append(f"Hatching Triage: suspicious (score {sc}/10)")
     pts, verdict = _verdict_from(pts)
     return {"score": pts, "verdict": verdict, "reasons": reasons, "bec": []}
 
@@ -1681,6 +1765,7 @@ def analyze(raw_input):
         "vt": bool(VT_API_KEY), "abuseipdb": bool(ABUSEIPDB_API_KEY),
         "otx": bool(OTX_API_KEY), "urlscan": bool(URLSCAN_API_KEY),
         "gsb": bool(GSB_API_KEY), "abusech": bool(ABUSECH_API_KEY),
+        "hybrid": bool(HYBRID_API_KEY), "triage": bool(TRIAGE_API_KEY),
     }
     return result
 
@@ -1692,6 +1777,8 @@ def _analyze_hash(parsed, raw_input):
         "vt_file":   _executor.submit(check_vt_file, h),
         "mb":        _executor.submit(malwarebazaar, h),
         "threatfox": _executor.submit(threatfox_lookup, h, h),
+        "hybrid":    _executor.submit(hybrid_analysis, h),
+        "triage":    _executor.submit(triage_lookup, h),
     }
     res = {k: f.result() for k, f in futures.items()}
     return {
@@ -1701,6 +1788,7 @@ def _analyze_hash(parsed, raw_input):
         "hash": h, "hash_type": parsed.get("hash_type"),
         "defanged": h,
         "vt_file": res["vt_file"], "mb": res["mb"], "threatfox": res["threatfox"],
+        "hybrid": res["hybrid"], "triage": res["triage"],
     }
 
 
@@ -1888,6 +1976,15 @@ def build_hash_summary(r):
     if mb.get("found"):
         lines.append(f"MalwareBazaar: known sample" + (f"  ·  {mb.get('signature')}" if mb.get("signature") else "")
                      + (f"  ·  delivery: {mb['delivery_method']}" if mb.get("delivery_method") else ""))
+    hy = r.get("hybrid") or {}
+    if hy.get("found"):
+        lines.append(f"Hybrid Analysis: {hy.get('verdict','?')}"
+                     + (f"  ·  {hy.get('family')}" if hy.get("family") else "")
+                     + (f"  ·  threat {hy.get('threat_score')}/100" if hy.get("threat_score") is not None else ""))
+    tr = r.get("triage") or {}
+    if tr.get("found") and tr.get("score") is not None:
+        fam = ", ".join(tr.get("family") or [])
+        lines.append(f"Hatching Triage: score {tr.get('score')}/10" + (f"  ·  {fam}" if fam else ""))
     if r.get("reasons"):
         lines.append("Signals:  " + " | ".join(r["reasons"]))
     return "\n".join(lines)
