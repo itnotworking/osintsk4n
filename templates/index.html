@@ -173,6 +173,7 @@ function ringColor(score) {
 
 // Plain-English definition for each risk-flag category (native hover tooltip).
 const FLAG_TIPS = {
+  "Compromised": "This exact address appears in infostealer-malware logs — its saved credentials were stolen, so the account may be hijacked and used to send malicious mail.",
   "Spoofable": "Weak email authentication (SPF/DKIM/DMARC) lets attackers forge mail from this domain — the basis of Business Email Compromise (BEC).",
   "New domain": "Recently registered domains are disproportionately used for scams and phishing.",
   "Impersonation": "Mimics a well-known brand or domain to deceive victims.",
@@ -634,14 +635,39 @@ function ipRepBlock(d) {
 }
 
 function emailRepBlock(d) {
-  const dis = d.disify, iq = d.ipqs, e = d.emailrep;
-  if (!dis && !iq && !e) return '<pre class="muted">No email reputation data available.</pre>';
+  const dis = d.disify, iq = d.ipqs, e = d.emailrep, hr = d.hudsonrock, xon = d.xon;
+  if (!dis && !iq && !e && !hr && !xon) return '<pre class="muted">No email reputation data available.</pre>';
   let html = "";
-  // Disify — always-on baseline (no key)
+  // --- Address reputation (free, no key): infostealer + breach exposure ---
+  if (hr) {
+    if (hr.compromised) {
+      html += kvrow("Infostealer exposure", "COMPROMISED — in stealer logs", "bad",
+        "This exact address was found in infostealer-malware logs: a device using it was infected and its saved passwords were stolen. The account may be hijacked (account-takeover risk).") +
+        kvrow("Infections", hr.count + (hr.last_date ? " · last " + hr.last_date : ""), "bad") +
+        ((hr.user_services || hr.corporate_services) ? kvrow("Stolen logins", (hr.user_services||0) + " personal / " + (hr.corporate_services||0) + " corporate", "bad") : "");
+    } else {
+      html += kvrow("Infostealer exposure", "clean — not in stealer logs", "good",
+        "Checks Hudson Rock's infostealer-malware database for this exact address. 'Clean' means it hasn't appeared in known credential-theft logs.");
+    }
+  }
+  if (xon) {
+    if (xon.found) {
+      html += kvrow("Breach exposure", xon.count + " known breach" + (xon.count === 1 ? "" : "es"), xon.count >= 8 ? "warn" : "",
+        "Data breaches this address has appeared in (via XposedOrNot). Breach presence is common for real, long-lived addresses — it's exposure, not proof of malice — but heavy exposure raises phishing / credential-stuffing risk.") +
+        ((xon.breaches && xon.breaches.length) ? kvrow("Seen in", xon.breaches.slice(0, 8).join(", ") + (xon.count > 8 ? ", +" + (xon.count - 8) + " more" : "")) : "");
+    } else {
+      html += kvrow("Breach exposure", "no known breaches", "good",
+        "This address wasn't found in XposedOrNot's breach database — either it's clean, or it's a new / unused address.");
+    }
+  }
+  // --- Validation (Disify) — format & deliverability, NOT mailbox existence ---
   if (dis) {
+    if (hr || xon) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">Validation (Disify)</div>';
     const sig = dis.signals || [];
-    html += kvrow("Valid format", dis.format ? "yes" : "no", dis.format ? "good" : "bad") +
-      kvrow("Mail records", dis.dns ? "present" : "NONE (no MX)", dis.dns ? "good" : "bad") +
+    html += kvrow("Format", dis.format ? "well-formed" : "invalid", dis.format ? "good" : "bad",
+        "Whether the address is syntactically valid (looks like name@domain). Syntax only — it does NOT confirm the mailbox actually exists.") +
+      kvrow("Domain can receive mail", dis.dns ? "yes (MX present)" : "NO (no MX)", dis.dns ? "good" : "bad",
+        "Whether the domain has mail (MX) servers. 'Yes' means the domain CAN receive email — not that this specific inbox exists.") +
       kvrow("Disposable", dis.disposable ? "YES" : "no", dis.disposable ? "bad" : "good") +
       kvrow("Free provider", dis.free ? "yes" : "no") +
       (dis.role ? kvrow("Role account", "yes (e.g. admin@ / info@)", "warn") : "") +
@@ -668,6 +694,7 @@ function emailRepBlock(d) {
       kvrow("Suspicious", e.suspicious ? "YES" : "no", e.suspicious ? "bad" : "good") +
       ((e.profiles && e.profiles.length) ? kvrow("Profiles", e.profiles.join(", ")) : "");
   }
+  html += '<div class="muted" style="font-size:11px;margin-top:12px">Covers format, deliverability &amp; reputation (breach / infostealer exposure) — it does not confirm the specific mailbox exists.</div>';
   return html;
 }
 
@@ -1004,7 +1031,10 @@ function stakeholderPoints(d) {
   if (d.kind === "cidr") return cidrPoints(d);
   if (d.kind === "hash") return hashPoints(d);
   const pts = [];
-  // Known-bad / actor correlation first — strongest signals. Skipped for consumer providers, whose
+  // Address-level compromise is the strongest email signal — surface it first (applies to any provider).
+  if (d.hudsonrock && d.hudsonrock.compromised)
+    pts.push("This exact address appears in infostealer-malware logs" + (d.hudsonrock.last_date ? " (most recently " + d.hudsonrock.last_date + ")" : "") + " — its saved credentials were stolen, so the account may be compromised and used for account-takeover or phishing.");
+  // Known-bad / actor correlation next — strongest domain signals. Skipped for consumer providers, whose
   // domains are 'mentioned' in threat feeds as artifacts (not because the provider itself is malicious).
   if (!d.is_provider && ((d.gsb && d.gsb.flagged) || (d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found)))
     pts.push("It appears in recognized threat databases as known-malicious infrastructure.");
@@ -1016,11 +1046,14 @@ function stakeholderPoints(d) {
     pts.push("It uses a disposable/throwaway email provider — unusual for a legitimate business sender.");
   else if (d.disify && d.disify.dns === false)
     pts.push("Its domain has no mail (MX) records, so it cannot actually receive email — a common trait of spoofed or fake senders.");
+  // Breach exposure — context, not proof of malice (surfaced for both provider and business addresses).
+  if (d.xon && d.xon.found && d.xon.count >= 1 && !(d.hudsonrock && d.hudsonrock.compromised))
+    pts.push("The address has been exposed in " + d.xon.count + " known data breach" + (d.xon.count === 1 ? "" : "es") + " — normal for a real, long-lived address, but it raises the odds of credential-stuffing or targeted phishing.");
   if (d.is_provider) {
     // Email at a major consumer provider — domain intel is about the provider, not the mailbox.
-    pts.push("This is a valid address at a major consumer mail provider (" + d.registrable + "). The domain details describe the provider's mail service, not this specific mailbox, so they can't confirm or clear the individual sender.");
-    if (!(d.disify && d.disify.disposable) && !(d.ipqs && (d.ipqs.recent_abuse || (d.ipqs.fraud_score || 0) >= 85)))
-      pts.push("No disposable, abuse, or reputation signals were found for the address itself. Judging the specific sender's history requires mailbox-level reputation (EmailRep / IPQS).");
+    pts.push("This is a valid address at a major consumer mail provider (" + d.registrable + "). The domain details describe the provider's mail service, not this specific mailbox — the sender itself is judged by the Email Reputation checks (breach / infostealer exposure).");
+    if (!(d.hudsonrock && d.hudsonrock.compromised) && !(d.xon && d.xon.found) && !(d.ipqs && (d.ipqs.recent_abuse || (d.ipqs.fraud_score || 0) >= 85)))
+      pts.push("The address itself shows no infostealer or breach exposure and no abuse signals.");
   } else {
     if (d.age_days != null) {
       if (d.age_days < 90) pts.push("The domain was registered very recently (" + d.age_days + (d.age_days === 1 ? " day" : " days") + " ago) — a common trait of fraudulent or throwaway sites.");

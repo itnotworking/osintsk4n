@@ -1142,6 +1142,49 @@ def disify_email(email):
     }
 
 
+def hudsonrock_email(email):
+    """Hudson Rock Cavalier (free, no key, no signup) — is this exact address in infostealer malware
+    logs? A hit means a machine that used this address was infected and its saved credentials were
+    stolen — a strong, actionable account-takeover signal for SOC triage."""
+    if not email:
+        return None
+    data = safe_get(
+        "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-email",
+        params={"email": email}, timeout=14,
+    )
+    if not data:
+        return None
+    stealers = data.get("stealers") or []
+    if not stealers:
+        return {"compromised": False}
+    dates = sorted([s.get("date_compromised") for s in stealers if s.get("date_compromised")], reverse=True)
+    return {
+        "compromised": True,
+        "count": len(stealers),
+        "last_date": (dates[0][:10] if dates else None),
+        "corporate_services": data.get("total_corporate_services")
+            or sum((s.get("total_corporate_services") or 0) for s in stealers),
+        "user_services": data.get("total_user_services")
+            or sum((s.get("total_user_services") or 0) for s in stealers),
+        "os": stealers[0].get("operating_system"),
+    }
+
+
+def xposedornot_email(email):
+    """XposedOrNot (free, no key, no signup) — which known data breaches this address appears in.
+    Exposure ≠ malicious (most real, long-lived addresses appear in some breach), so this is reported
+    as reputation CONTEXT, not scored as a risk on its own."""
+    if not email:
+        return None
+    data = safe_get("https://api.xposedornot.com/v1/check-email/" + quote(email), timeout=12)
+    if not data or data.get("Error"):
+        return {"found": False}
+    breaches = data.get("breaches") or []
+    names = breaches[0] if (breaches and isinstance(breaches[0], list)) else breaches
+    names = [n for n in names if isinstance(n, str)]
+    return {"found": bool(names), "count": len(names), "breaches": names[:12]}
+
+
 def emailrep_lookup(email):
     """EmailRep.io — reputation of an email address (suspicious/malicious, breaches, profiles)."""
     if not email:
@@ -1710,6 +1753,17 @@ def score(result):
         pts += 15
         reasons.append("GreyNoise: source IP classified malicious")
 
+    # Address-level infostealer exposure (Hudson Rock) — applies to ANY address, provider or not, because
+    # it's about the specific mailbox, not the domain. A hit = the account's saved creds were harvested.
+    hr = result.get("hudsonrock")
+    if hr and hr.get("compromised"):
+        pts += 20
+        reasons.append(
+            f"Hudson Rock: address found in infostealer logs ({hr.get('count')} infection(s)"
+            + (f", last {hr.get('last_date')}" if hr.get("last_date") else "") + ")"
+        )
+        flags.append({"cat": "Compromised", "detail": "in infostealer logs"})
+
     dis = result.get("disify")
     if dis:
         sig = dis.get("signals") or []
@@ -1896,6 +1950,9 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "emailrep": _executor.submit(emailrep_lookup, parsed["email"]),
         "ipqs":  _executor.submit(ipqs_email, parsed["email"]),
         "disify": _executor.submit(disify_email, parsed["email"]),
+        # address-level reputation (free, no key) — only meaningful for an email query
+        "hudsonrock": _executor.submit(hudsonrock_email, parsed["email"]),
+        "xon":   _executor.submit(xposedornot_email, parsed["email"]),
     }
     res = {k: f.result() for k, f in futures.items()}
 
@@ -1941,6 +1998,7 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "urlhaus": res["urlhaus"], "shodan": res["shodan"],
         "greynoise": res["greynoise"], "gsb": res["gsb"],
         "emailrep": res["emailrep"], "ipqs": res["ipqs"], "disify": res["disify"],
+        "hudsonrock": res["hudsonrock"], "xon": res["xon"],
         # derived
         "age_days": age_days, "registered": reg_date,
         "spf_parsed": spf, "dmarc_parsed": dmarc,
@@ -1955,9 +2013,9 @@ def _analyze_domain(parsed, domain, ip, raw_input):
     # specific sender. Flag this so the UI + scoring don't misread the provider as the sender.
     result["is_provider"] = bool(is_email and result["freemail"])
     result["provider_note"] = (
-        f"{reg_dom} is a major consumer mail provider. Everything below describes the provider's own "
-        f"mail infrastructure — not this specific mailbox — so it can neither confirm nor clear the "
-        f"individual sender. Judging the address itself requires mailbox-level reputation (EmailRep / IPQS)."
+        f"{reg_dom} is a major consumer mail provider, so the domain data below describes the provider's "
+        f"mail infrastructure — not this specific mailbox. The sender itself is assessed by the Email "
+        f"Reputation checks (breach & infostealer exposure), which look up the exact address."
     ) if result["is_provider"] else None
     return result
 
@@ -1983,6 +2041,20 @@ def build_summary(r):
                      + (f" ({age}d old)" if age is not None else ""))
     if r.get("mx_provider"):
         lines.append(f"Mail:     {r['mx_provider']}")
+    if r.get("kind") == "email":
+        hr, xon = r.get("hudsonrock") or {}, r.get("xon") or {}
+        rep = []
+        if hr.get("compromised"):
+            rep.append(f"infostealer logs ({hr.get('count')} infection(s)"
+                       + (f", last {hr.get('last_date')}" if hr.get("last_date") else "") + ")")
+        elif hr:
+            rep.append("no infostealer exposure")
+        if xon.get("found"):
+            rep.append(f"{xon.get('count')} known breach(es)")
+        elif xon:
+            rep.append("no known breaches")
+        if rep:
+            lines.append("Address:  " + " | ".join(rep))
     dmarc = r.get("dmarc_parsed")
     lines.append(f"DMARC:    {('p=' + dmarc['policy']) if dmarc else 'MISSING'}"
                  f"  |  SPF: {'present' if r.get('spf_parsed') else 'MISSING'}"
