@@ -232,12 +232,19 @@ function cards(d) {
   if (d.kind === "hash") return hashCards(d);
   const out = [];
 
+  // Consumer-provider context: domain intel describes the provider, not the mailbox. Say so up front.
+  const provider = !!d.is_provider;
+  if (provider && d.provider_note)
+    out.push(card("About this address", '<pre class="muted" style="white-space:pre-wrap;margin:0">' + esc(d.provider_note) + '</pre>'));
+
   // Email authentication posture — the BEC card
   const dmarc = d.dmarc_parsed, spf = d.spf_parsed;
-  const dmarcBad = !dmarc || (dmarc.policy || "none").toLowerCase() === "none";
+  // For a big provider, its p=none / neutral SPF is the provider's own choice — not a risk about the sender.
+  const dmarcBad = !provider && (!dmarc || (dmarc.policy || "none").toLowerCase() === "none");
+  const spfBad = !provider;
   out.push(card("Email Auth Posture (BEC)",
     kvrow("DMARC", dmarc ? "p=" + dmarc.policy + (dmarc.pct && dmarc.pct !== "100" ? " pct=" + dmarc.pct : "") : "MISSING", dmarcBad ? "bad" : "good", "DMARC tells receivers what to do with spoofed mail. p=reject (block) is strongest; p=none or MISSING means the domain is easy to spoof (a BEC risk).") +
-    kvrow("SPF", spf ? spf.policy : "MISSING", spf ? (spf.policy.includes("dangerous") ? "bad" : "good") : "bad", "SPF lists which servers may send mail for this domain. MISSING makes spoofing easier.") +
+    kvrow("SPF", spf ? spf.policy : "MISSING", spf ? (spf.policy.includes("dangerous") ? "bad" : "good") : (spfBad ? "bad" : "good"), "SPF lists which servers may send mail for this domain. MISSING makes spoofing easier.") +
     kvrow("DKIM", (d.dkim && d.dkim.length) ? d.dkim.join(", ") : "none found (selectors probed)", (d.dkim && d.dkim.length) ? "good" : "warn", "DKIM cryptographically signs outgoing mail. We probe common selectors; 'none found' isn't conclusive but is a weak-auth sign.") +
     kvrow("Mail provider", d.mx_provider || "—") +
     (dmarc && dmarc.rua ? kvrow("DMARC rua", dmarc.rua) : "")
@@ -297,7 +304,9 @@ function cards(d) {
   if (d.crtsh && d.crtsh.subdomains && d.crtsh.subdomains.length)
     out.push(card("Subdomains (crt.sh)", crtBlock(d.crtsh)));
 
-  return '<div class="grid">' + out.join("") + '</div>' + urlscanSection(d) + buildTicket(d);
+  // urlscan renders the domain as a website — irrelevant for an email search, so skip it there.
+  return '<div class="grid">' + out.join("") + '</div>' +
+    (d.kind === "email" ? "" : urlscanSection(d)) + buildTicket(d);
 }
 
 /* ---------- File-hash layout ---------- */
@@ -1004,14 +1013,21 @@ function stakeholderPoints(d) {
     pts.push("It uses a disposable/throwaway email provider — unusual for a legitimate business sender.");
   else if (d.disify && d.disify.dns === false)
     pts.push("Its domain has no mail (MX) records, so it cannot actually receive email — a common trait of spoofed or fake senders.");
-  if (d.age_days != null) {
-    if (d.age_days < 90) pts.push("The domain was registered very recently (" + d.age_days + (d.age_days === 1 ? " day" : " days") + " ago) — a common trait of fraudulent or throwaway sites.");
-    else pts.push("The domain has been established for " + Math.floor(d.age_days / 365) + "+ years, consistent with a legitimate organization.");
+  if (d.is_provider) {
+    // Email at a major consumer provider — domain intel is about the provider, not the mailbox.
+    pts.push("This is a valid address at a major consumer mail provider (" + d.registrable + "). The domain details describe the provider's mail service, not this specific mailbox, so they can't confirm or clear the individual sender.");
+    if (!(d.disify && d.disify.disposable) && !(d.ipqs && (d.ipqs.recent_abuse || (d.ipqs.fraud_score || 0) >= 85)))
+      pts.push("No disposable, abuse, or reputation signals were found for the address itself. Judging the specific sender's history requires mailbox-level reputation (EmailRep / IPQS).");
+  } else {
+    if (d.age_days != null) {
+      if (d.age_days < 90) pts.push("The domain was registered very recently (" + d.age_days + (d.age_days === 1 ? " day" : " days") + " ago) — a common trait of fraudulent or throwaway sites.");
+      else pts.push("The domain has been established for " + Math.floor(d.age_days / 365) + "+ years, consistent with a legitimate organization.");
+    }
+    const dmarcBad = !d.dmarc_parsed || (d.dmarc_parsed.policy || "none").toLowerCase() === "none";
+    if (dmarcBad || !d.spf_parsed) pts.push("Its email protections are incomplete, so messages claiming to come from it can be more easily spoofed.");
+    else pts.push("Its email protections (SPF/DKIM/DMARC) are properly configured, making impersonation difficult.");
+    if (d.urlscan && d.urlscan.redirect && d.urlscan.redirect.offsite) pts.push("When opened, the link sends users to an unrelated website (" + d.urlscan.redirect.to_reg + ") — a hallmark of scams and parked domains.");
   }
-  const dmarcBad = !d.dmarc_parsed || (d.dmarc_parsed.policy || "none").toLowerCase() === "none";
-  if (dmarcBad || !d.spf_parsed) pts.push("Its email protections are incomplete, so messages claiming to come from it can be more easily spoofed.");
-  else pts.push("Its email protections (SPF/DKIM/DMARC) are properly configured, making impersonation difficult.");
-  if (d.urlscan && d.urlscan.redirect && d.urlscan.redirect.offsite) pts.push("When opened, the link sends users to an unrelated website (" + d.urlscan.redirect.to_reg + ") — a hallmark of scams and parked domains.");
   if (d.vt && (d.vt.last_analysis_stats || {}).malicious > 0) pts.push("Security vendors have flagged this domain as malicious.");
   if (d.abuse && (d.abuse.abuseConfidenceScore || 0) >= 25) pts.push("The hosting address has been reported for abusive activity.");
   if (!pts.length || (d.verdict === "Likely Legitimate" && pts.length < 2)) pts.push("No threat-intelligence sources flagged it, and its infrastructure looks normal.");

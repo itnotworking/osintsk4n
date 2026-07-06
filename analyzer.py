@@ -1586,6 +1586,11 @@ def score(result):
     # analyst isn't left decoding a blanket label. "BEC" is applied ONLY to true email-spoofing signals.
     flags = []
 
+    # A consumer mail provider (gmail.com etc.) queried via an email address: its domain age / SPF / DMARC
+    # describe the PROVIDER, not the sender, so penalizing them would wrongly paint every Gmail user as
+    # "suspicious". Known-bad feeds (VT/GSB/ThreatFox/…) still apply — they'd catch a genuinely bad provider.
+    provider = bool(result.get("is_provider"))
+
     vt = result.get("vt")
     if vt:
         s = vt.get("last_analysis_stats", {})
@@ -1606,7 +1611,7 @@ def score(result):
             pts += 14; reasons.append(f"AbuseIPDB confidence {sc}/100")
 
     age_days = result.get("age_days")
-    if age_days is not None:
+    if age_days is not None and not provider:
         if age_days < 30:
             pts += 28
             reasons.append(f"Newly registered domain ({age_days}d old)")
@@ -1617,7 +1622,9 @@ def score(result):
             flags.append({"cat": "New domain", "detail": f"{age_days}d old"})
 
     dmarc = result.get("dmarc_parsed")
-    if dmarc is None:
+    if provider:
+        pass  # provider's SPF/DMARC posture isn't a signal about the individual mailbox
+    elif dmarc is None:
         pts += 14
         reasons.append("No DMARC record — spoofable")
         flags.append({"cat": "Spoofable", "detail": "no DMARC record"})
@@ -1626,7 +1633,7 @@ def score(result):
         reasons.append("DMARC p=none — not enforced")
         flags.append({"cat": "Spoofable", "detail": "DMARC not enforced (p=none)"})
 
-    if result.get("spf_parsed") is None and result.get("kind") != "url":
+    if result.get("spf_parsed") is None and result.get("kind") != "url" and not provider:
         pts += 6
         reasons.append("No SPF record")
         flags.append({"cat": "Spoofable", "detail": "no SPF record"})
@@ -1857,6 +1864,10 @@ def _analyze_ip(parsed, ip, raw_input):
 
 
 def _analyze_domain(parsed, domain, ip, raw_input):
+    # urlscan renders a DOMAIN as a website in a browser. That is meaningless (and actively
+    # misleading) for an EMAIL search — e.g. gmail.com's site redirects to Google sign-in, which
+    # is not a phishing signal about someone's mailbox. So skip the website scan for email.
+    is_email = parsed["kind"] == "email"
     futures = {
         "a":     _executor.submit(dns_lookup, domain, "A"),
         "aaaa":  _executor.submit(dns_lookup, domain, "AAAA"),
@@ -1870,7 +1881,7 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "rdap":  _executor.submit(rdap_domain, parsed["registrable"]),
         "info":  _executor.submit(ip_info, ip),
         "abuse": _executor.submit(abuseipdb, ip),
-        "urlscan": _executor.submit(urlscan_search, domain),
+        "urlscan": _executor.submit(lambda: None) if is_email else _executor.submit(urlscan_search, domain),
         "crtsh": _executor.submit(crtsh, parsed["registrable"]),
         "dkim":  _executor.submit(check_dkim, domain),
         "otx":   _executor.submit(otx_lookup, parsed["registrable"]),
@@ -1936,6 +1947,15 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "freemail": reg_dom in FREEMAIL_DOMAINS,
         "disposable": reg_dom in DISPOSABLE_DOMAINS,
     }
+    # For a consumer mail provider (gmail.com, outlook.com, ...) the domain-level intel describes the
+    # PROVIDER, not the individual mailbox — so a clean/imperfect domain neither clears nor condemns the
+    # specific sender. Flag this so the UI + scoring don't misread the provider as the sender.
+    result["is_provider"] = bool(is_email and result["freemail"])
+    result["provider_note"] = (
+        f"{reg_dom} is a major consumer mail provider. Everything below describes the provider's own "
+        f"mail infrastructure — not this specific mailbox — so it can neither confirm nor clear the "
+        f"individual sender. Judging the address itself requires mailbox-level reputation (EmailRep / IPQS)."
+    ) if result["is_provider"] else None
     return result
 
 
