@@ -1490,7 +1490,7 @@ def score_ip(result):
     if info and info.get("status") == "success" and info.get("proxy"):
         pts += 8; reasons.append("Flagged as proxy / VPN / Tor")
     pts, verdict = _verdict_from(pts)
-    return {"score": pts, "verdict": verdict, "reasons": reasons, "bec": []}
+    return {"score": pts, "verdict": verdict, "reasons": reasons, "flags": []}
 
 
 def score_cidr(result):
@@ -1519,7 +1519,7 @@ def score_cidr(result):
         else:
             reasons.append("No addresses in this block have recent abuse reports")
     pts, verdict = _verdict_from(pts)
-    return {"score": pts, "verdict": verdict, "reasons": reasons, "bec": []}
+    return {"score": pts, "verdict": verdict, "reasons": reasons, "flags": []}
 
 
 def score_hash(result):
@@ -1568,7 +1568,7 @@ def score_hash(result):
             pts += 22
             reasons.append(f"Hatching Triage: suspicious (score {sc}/10)")
     pts, verdict = _verdict_from(pts)
-    return {"score": pts, "verdict": verdict, "reasons": reasons, "bec": []}
+    return {"score": pts, "verdict": verdict, "reasons": reasons, "flags": []}
 
 
 def score(result):
@@ -1581,7 +1581,10 @@ def score(result):
         return score_ip(result)
     pts = 0
     reasons = []
-    bec = []
+    # Categorized risk flags shown as chips in the verdict banner: {"cat": <category>, "detail": <specific>}.
+    # Category names are meaningful on their own (Spoofable, New domain, Redirect, Known bad, ...) so the
+    # analyst isn't left decoding a blanket label. "BEC" is applied ONLY to true email-spoofing signals.
+    flags = []
 
     vt = result.get("vt")
     if vt:
@@ -1607,26 +1610,26 @@ def score(result):
         if age_days < 30:
             pts += 28
             reasons.append(f"Newly registered domain ({age_days}d old)")
-            bec.append("Newly registered domain")
+            flags.append({"cat": "New domain", "detail": f"registered {age_days}d ago"})
         elif age_days < 90:
             pts += 14
             reasons.append(f"Young domain ({age_days}d old)")
-            bec.append("Young domain (<90d)")
+            flags.append({"cat": "New domain", "detail": f"{age_days}d old"})
 
     dmarc = result.get("dmarc_parsed")
     if dmarc is None:
         pts += 14
         reasons.append("No DMARC record — spoofable")
-        bec.append("No DMARC (spoofable)")
+        flags.append({"cat": "Spoofable", "detail": "no DMARC record"})
     elif dmarc.get("policy", "none").lower() == "none":
         pts += 8
         reasons.append("DMARC p=none — not enforced")
-        bec.append("DMARC not enforced (p=none)")
+        flags.append({"cat": "Spoofable", "detail": "DMARC not enforced (p=none)"})
 
     if result.get("spf_parsed") is None and result.get("kind") != "url":
         pts += 6
         reasons.append("No SPF record")
-        bec.append("No SPF")
+        flags.append({"cat": "Spoofable", "detail": "no SPF record"})
 
     tld = result.get("registrable", "").rsplit(".", 1)[-1]
     if tld in HIGH_RISK_TLDS:
@@ -1635,13 +1638,13 @@ def score(result):
     look = result.get("lookalike", {})
     for f in look.get("flags", []):
         if f["severity"] == "high":
-            pts += 22; reasons.append(f["detail"]); bec.append(f["detail"])
+            pts += 22; reasons.append(f["detail"]); flags.append({"cat": "Impersonation", "detail": f["detail"]})
         elif f["severity"] == "medium":
             pts += 10; reasons.append(f["detail"])
 
     if result.get("disposable"):
         pts += 16; reasons.append("Disposable / throwaway email domain")
-        bec.append("Disposable email domain")
+        flags.append({"cat": "Disposable", "detail": "throwaway email domain"})
     elif result.get("freemail") and result.get("kind") == "email":
         pts += 4; reasons.append("Free consumer mail provider")
 
@@ -1650,7 +1653,7 @@ def score(result):
         pts += 28
         to_reg = us["redirect"]["to_reg"]
         reasons.append(f"Redirects off-domain to {to_reg} (not {result.get('registrable')})")
-        bec.append(f"Off-domain redirect → {to_reg}")
+        flags.append({"cat": "Redirect", "detail": f"→ {to_reg}"})
     if us and us.get("verdict"):
         uv = us["verdict"]
         if uv.get("malicious"):
@@ -1658,7 +1661,7 @@ def score(result):
             brands = ", ".join(uv.get("brands", [])) if uv.get("brands") else ""
             reasons.append("urlscan: malicious verdict" + (f" (impersonates {brands})" if brands else ""))
             if brands:
-                bec.append(f"urlscan brand impersonation: {brands}")
+                flags.append({"cat": "Impersonation", "detail": f"impersonates {brands}"})
         elif uv.get("score", 0) > 0:
             pts += 12; reasons.append(f"urlscan risk score {uv['score']}")
 
@@ -1666,20 +1669,20 @@ def score(result):
     if gsb and gsb.get("flagged"):
         pts += 40
         reasons.append("Google Safe Browsing: " + ", ".join(gsb.get("threats") or ["flagged"]))
-        bec.append("Google Safe Browsing hit")
+        flags.append({"cat": "Known bad", "detail": "Google Safe Browsing hit"})
 
     tf = result.get("threatfox")
     if tf and tf.get("found"):
         pts += 35
         fam = ", ".join(tf.get("malware") or [])
         reasons.append("ThreatFox: known malicious IOC" + (f" ({fam})" if fam else ""))
-        bec.append("ThreatFox known IOC")
+        flags.append({"cat": "Known bad", "detail": "ThreatFox IOC" + (f" ({fam})" if fam else "")})
 
     uh = result.get("urlhaus")
     if uh and uh.get("found"):
         pts += 35
         reasons.append(f"URLhaus: known malware host ({uh.get('url_count', '?')} URLs)")
-        bec.append("URLhaus malware host")
+        flags.append({"cat": "Known bad", "detail": "URLhaus malware host"})
 
     otx = result.get("otx")
     if otx and otx.get("pulse_count", 0) > 0:
@@ -1687,7 +1690,7 @@ def score(result):
         if named:
             pts += 20
             reasons.append(f"AlienVault OTX: {otx['pulse_count']} reports ({', '.join(named[:3])})")
-            bec.append("OTX threat reports")
+            flags.append({"cat": "Known bad", "detail": "OTX threat reports"})
         else:
             pts += 10
             reasons.append(f"AlienVault OTX: {otx['pulse_count']} community threat reports")
@@ -1701,7 +1704,7 @@ def score(result):
     if dis:
         sig = dis.get("signals") or []
         if dis.get("disposable") and not result.get("disposable"):
-            pts += 12; reasons.append("Disposable/temporary email domain (Disify)"); bec.append("Disposable email domain")
+            pts += 12; reasons.append("Disposable/temporary email domain (Disify)"); flags.append({"cat": "Disposable", "detail": "throwaway email domain"})
         if dis.get("dns") is False:
             pts += 8; reasons.append("Email domain has no MX records (cannot receive mail)")
         if "high_entropy" in sig:
@@ -1713,7 +1716,7 @@ def score(result):
         if iq.get("recent_abuse") or fs >= 85:
             pts += 25
             reasons.append(f"IPQS: recent abuse / high fraud score ({fs})")
-            bec.append("IPQS high fraud/abuse")
+            flags.append({"cat": "Fraud", "detail": f"IPQS high fraud/abuse ({fs})"})
         elif fs >= 60:
             pts += 14; reasons.append(f"IPQS fraud score {fs}")
         if iq.get("honeypot") or iq.get("spam_trap_score") in ("high", "medium"):
@@ -1726,7 +1729,7 @@ def score(result):
     er = result.get("emailrep")
     if er:
         if er.get("malicious_activity"):
-            pts += 25; reasons.append("EmailRep: known malicious activity"); bec.append("EmailRep malicious activity")
+            pts += 25; reasons.append("EmailRep: known malicious activity"); flags.append({"cat": "Fraud", "detail": "EmailRep: known malicious activity"})
         elif er.get("suspicious"):
             pts += 14; reasons.append("EmailRep: flagged suspicious")
         if er.get("credentials_leaked") or er.get("data_breach"):
@@ -1747,7 +1750,7 @@ def score(result):
     else:
         verdict = "Likely Legitimate"
 
-    return {"score": pts, "verdict": verdict, "reasons": reasons, "bec": bec}
+    return {"score": pts, "verdict": verdict, "reasons": reasons, "flags": flags}
 
 
 # --------------------------------------------------------------------------
@@ -1961,8 +1964,8 @@ def build_summary(r):
     lines.append(f"DMARC:    {('p=' + dmarc['policy']) if dmarc else 'MISSING'}"
                  f"  |  SPF: {'present' if r.get('spf_parsed') else 'MISSING'}"
                  f"  |  DKIM: {', '.join(r['dkim']) if r.get('dkim') else 'none found'}")
-    if r.get("bec"):
-        lines.append("BEC flags: " + "; ".join(r["bec"]))
+    if r.get("flags"):
+        lines.append("Risk flags: " + "; ".join(f"{x['cat']} ({x['detail']})" for x in r["flags"]))
     if r.get("reasons"):
         lines.append("Signals:  " + " | ".join(r["reasons"]))
     return "\n".join(lines)

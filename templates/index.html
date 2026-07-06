@@ -171,9 +171,23 @@ function ringColor(score) {
   return "#3fb950";                     // green
 }
 
+// Plain-English definition for each risk-flag category (native hover tooltip).
+const FLAG_TIPS = {
+  "Spoofable": "Weak email authentication (SPF/DKIM/DMARC) lets attackers forge mail from this domain — the basis of Business Email Compromise (BEC).",
+  "New domain": "Recently registered domains are disproportionately used for scams and phishing.",
+  "Impersonation": "Mimics a well-known brand or domain to deceive victims.",
+  "Redirect": "Silently sends visitors to a different domain than the one requested.",
+  "Known bad": "Listed on a threat-intelligence feed of confirmed-malicious indicators.",
+  "Disposable": "A temporary / throwaway email domain, often used to avoid attribution.",
+  "Fraud": "Flagged for fraud or abuse by an email / IP reputation service."
+};
 function verdictBanner(d) {
   const cls = verdictClass(d.verdict);
-  const tags = (d.bec || []).map(t => '<span class="tag bec">BEC · ' + esc(t) + '</span>').join("");
+  const tags = (d.flags || []).map(f => {
+    const tip = FLAG_TIPS[f.cat] || "";
+    return '<span class="tag"' + (tip ? ' title="' + esc(tip) + '"' : '') +
+      '><b>' + esc(f.cat) + '</b>' + (f.detail ? ' · ' + esc(f.detail) : '') + '</span>';
+  }).join("");
   return '' +
     '<div class="verdict ' + cls + ' fade-in">' +
       '<div class="score-ring" style="--pct:' + d.score + ';--ring:' + ringColor(d.score) + '"><i>' + d.score + '</i></div>' +
@@ -900,7 +914,7 @@ function fmtSecurity(d) {
   if (d.mx_provider) L.push("Mail:     " + d.mx_provider);
   L.push("Auth:     " + authLine(d));
   if (d.urlscan && d.urlscan.redirect && d.urlscan.redirect.offsite) L.push("Redirect: off-domain to " + d.urlscan.redirect.to_reg);
-  if (d.bec && d.bec.length) L.push("BEC:      " + d.bec.join("; "));
+  if (d.flags && d.flags.length) L.push("Flags:    " + d.flags.map(f => f.cat + " (" + f.detail + ")").join("; "));
   if (d.reasons && d.reasons.length) L.push("Signals:  " + d.reasons.join(" | "));
   L.push("");
   L.push("Recommended action: " + recAction(d));

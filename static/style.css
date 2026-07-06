@@ -216,6 +216,8 @@ header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
   font-size: 11px; padding: 2px 0; color: #e0908f; letter-spacing: .3px;
 }
 .tag::before { content: "▸ "; color: var(--crit); }
+.tag b { color: #f2b6b5; font-weight: 600; }
+.tag[title] { cursor: help; }
 .tag + .tag { margin-left: 14px; }
 
 /* ---- signals: plain list ---- */
