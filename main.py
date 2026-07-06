@@ -89,7 +89,15 @@ async def analyze(request: Request, target: str = Form(...)):
     if not target or len(target) > 2048:
         return JSONResponse({"ok": False, "error": "Invalid input."}, status_code=400)
 
-    result = await asyncio.to_thread(analyzer.analyze, target)
+    try:
+        result = await asyncio.to_thread(analyzer.analyze, target)
+    except Exception:
+        # Never leak a plain-text 500 — the UI expects JSON so it can show a clear reason.
+        return JSONResponse(
+            {"ok": False, "error": "The analysis engine hit an unexpected error on this input. "
+                                   "Please try again, or try a different format."},
+            status_code=500,
+        )
     status = 200 if result.get("ok") else 400
     return JSONResponse(result, status_code=status)
 

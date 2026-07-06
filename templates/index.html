@@ -105,6 +105,8 @@ async function analyze() {
   if (currentController) currentController.abort();   // supersede any in-flight search
   const controller = new AbortController();
   currentController = controller;
+  let timedOut = false;
+  const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, 55000);
   setRunning(true);
   startLoader(target);
   $("output").innerHTML = "";
@@ -112,16 +114,42 @@ async function analyze() {
   const form = new FormData();
   form.append("target", target);
 
+  const fail = (msg) => {
+    stopLoader(); setRunning(false); currentController = null;
+    $("output").innerHTML = '<div class="err">✗ ' + esc(msg) + '</div>';
+    $("status").innerHTML = "";
+  };
+
   try {
     const res = await fetch("/analyze", { method: "POST", body: form, signal: controller.signal });
-    const data = await res.json();
+    clearTimeout(timeoutId);
     if (controller.signal.aborted) return;            // cancelled or superseded
-    if (!data.ok) {
-      stopLoader(); setRunning(false); currentController = null;
-      $("output").innerHTML = '<div class="err">✗ ' + esc(data.error || "Analysis failed") + '</div>';
-      $("status").innerHTML = "";
+    if (!res.ok) {
+      // The server answered, but with an error status — explain what happened.
+      let msg;
+      if (res.status === 429) msg = "Too many searches in a short time. Wait a few seconds and try again.";
+      else if (res.status === 400) {
+        let body = null; try { body = await res.json(); } catch (_) {}
+        msg = (body && body.error) ? body.error : "That input wasn't understood — check the format and try again.";
+      } else if (res.status === 502 || res.status === 503 || res.status === 504) {
+        msg = "The analysis took too long and the server timed out before finishing. Domains that don't resolve still get every source checked, which can be slow — please try again.";
+      } else if (res.status >= 500) {
+        msg = "The analysis engine hit an error on this input (HTTP " + res.status + "). Please try again, or try a different format.";
+      } else {
+        msg = "The request failed (HTTP " + res.status + ").";
+      }
+      fail(msg);
       return;
     }
+    let data;
+    try {
+      data = await res.json();
+    } catch (_) {
+      fail("The server returned an unexpected response — it may have timed out mid-analysis. Please try again.");
+      return;
+    }
+    if (controller.signal.aborted) return;
+    if (!data.ok) { fail(data.error || "Analysis failed."); return; }
     finishLoader();
     await new Promise(r => setTimeout(r, 220));
     if (controller.signal.aborted) return;
@@ -130,10 +158,13 @@ async function analyze() {
     $("status").innerHTML = '✓ Triage complete · ' + esc(data.kind) + ' · ' + esc(data.domain);
     setRunning(false); currentController = null;
   } catch (e) {
-    if (e.name === "AbortError") return;              // cancel/supersede handled elsewhere
-    stopLoader(); setRunning(false); currentController = null;
-    $("output").innerHTML = '<div class="err">✗ Network error</div>';
-    $("status").innerHTML = "";
+    clearTimeout(timeoutId);
+    if (e.name === "AbortError") {
+      // Distinguish our own timeout from a user cancel / superseding search.
+      if (timedOut) fail("The analysis timed out after 55 seconds — some intel sources were slow to respond (common for domains with no DNS records). Please try again.");
+      return;
+    }
+    fail("Couldn't reach the analysis server. Check your internet connection and try again.");
   }
 }
 
