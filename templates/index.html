@@ -285,8 +285,10 @@ function cards(d) {
   // AbuseIPDB
   out.push(card("AbuseIPDB (IP)", abuseBlock(d.abuse)));
 
-  // Threat intel — actor/campaign correlation + known-bad feeds
-  out.push(card("Threat Intel (OTX)", otxBlock(d.otx)));
+  // Threat intel — actor/campaign correlation + known-bad feeds.
+  // OTX counts every pulse that MENTIONS the domain; for a big provider (gmail.com) that's a huge,
+  // meaningless number, so hide it there. The exact-match feeds below stay clean and are safe to show.
+  if (!provider) out.push(card("Threat Intel (OTX)", otxBlock(d.otx)));
   out.push(card("Threat Feeds", threatFeedsBlock(d)));
   out.push(card("IP Reputation", ipRepBlock(d)));
 
@@ -1002,10 +1004,11 @@ function stakeholderPoints(d) {
   if (d.kind === "cidr") return cidrPoints(d);
   if (d.kind === "hash") return hashPoints(d);
   const pts = [];
-  // Known-bad / actor correlation first — strongest signals.
-  if ((d.gsb && d.gsb.flagged) || (d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found))
+  // Known-bad / actor correlation first — strongest signals. Skipped for consumer providers, whose
+  // domains are 'mentioned' in threat feeds as artifacts (not because the provider itself is malicious).
+  if (!d.is_provider && ((d.gsb && d.gsb.flagged) || (d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found)))
     pts.push("It appears in recognized threat databases as known-malicious infrastructure.");
-  if (d.otx && d.otx.pulse_count > 0 && ((d.otx.malware_families || []).length || (d.otx.adversaries || []).length))
+  if (!d.is_provider && d.otx && d.otx.pulse_count > 0 && ((d.otx.malware_families || []).length || (d.otx.adversaries || []).length))
     pts.push("It is linked to reported threat activity (associated malware or threat actors).");
   if (d.ipqs && (d.ipqs.recent_abuse || (d.ipqs.fraud_score || 0) >= 85))
     pts.push("This email address shows signs of fraudulent or abusive activity.");
@@ -1028,8 +1031,8 @@ function stakeholderPoints(d) {
     else pts.push("Its email protections (SPF/DKIM/DMARC) are properly configured, making impersonation difficult.");
     if (d.urlscan && d.urlscan.redirect && d.urlscan.redirect.offsite) pts.push("When opened, the link sends users to an unrelated website (" + d.urlscan.redirect.to_reg + ") — a hallmark of scams and parked domains.");
   }
-  if (d.vt && (d.vt.last_analysis_stats || {}).malicious > 0) pts.push("Security vendors have flagged this domain as malicious.");
-  if (d.abuse && (d.abuse.abuseConfidenceScore || 0) >= 25) pts.push("The hosting address has been reported for abusive activity.");
+  if (!d.is_provider && d.vt && (d.vt.last_analysis_stats || {}).malicious > 0) pts.push("Security vendors have flagged this domain as malicious.");
+  if (!d.is_provider && d.abuse && (d.abuse.abuseConfidenceScore || 0) >= 25) pts.push("The hosting address has been reported for abusive activity.");
   if (!pts.length || (d.verdict === "Likely Legitimate" && pts.length < 2)) pts.push("No threat-intelligence sources flagged it, and its infrastructure looks normal.");
   return pts.slice(0, 5);
 }

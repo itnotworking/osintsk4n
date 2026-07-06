@@ -1586,13 +1586,16 @@ def score(result):
     # analyst isn't left decoding a blanket label. "BEC" is applied ONLY to true email-spoofing signals.
     flags = []
 
-    # A consumer mail provider (gmail.com etc.) queried via an email address: its domain age / SPF / DMARC
-    # describe the PROVIDER, not the sender, so penalizing them would wrongly paint every Gmail user as
-    # "suspicious". Known-bad feeds (VT/GSB/ThreatFox/…) still apply — they'd catch a genuinely bad provider.
+    # A consumer mail provider (gmail.com etc.) queried via an email address: EVERY domain-level source
+    # (age, SPF/DMARC, VirusTotal, AbuseIPDB, OTX, GSB, ThreatFox, URLhaus) describes the PROVIDER, not the
+    # sender. For a popular provider those feeds are either clean or noisy — e.g. gmail.com appears in
+    # thousands of OTX pulses purely as a mentioned artifact. So none of them may drive the verdict; the
+    # score rests only on address-level signals (disposable / EmailRep / IPQS). These 21 providers are a
+    # curated, universally-trusted allowlist, so trusting the domain itself is safe.
     provider = bool(result.get("is_provider"))
 
     vt = result.get("vt")
-    if vt:
+    if vt and not provider:
         s = vt.get("last_analysis_stats", {})
         mal, susp = s.get("malicious", 0), s.get("suspicious", 0)
         if mal >= 5:
@@ -1603,7 +1606,7 @@ def score(result):
             pts += 10; reasons.append(f"VirusTotal: {susp} suspicious")
 
     abuse = result.get("abuse")
-    if abuse:
+    if abuse and not provider:
         sc = abuse.get("abuseConfidenceScore", 0)
         if sc >= 50:
             pts += 30; reasons.append(f"AbuseIPDB confidence {sc}/100")
@@ -1673,26 +1676,26 @@ def score(result):
             pts += 12; reasons.append(f"urlscan risk score {uv['score']}")
 
     gsb = result.get("gsb")
-    if gsb and gsb.get("flagged"):
+    if gsb and gsb.get("flagged") and not provider:
         pts += 40
         reasons.append("Google Safe Browsing: " + ", ".join(gsb.get("threats") or ["flagged"]))
         flags.append({"cat": "Known bad", "detail": "Google Safe Browsing hit"})
 
     tf = result.get("threatfox")
-    if tf and tf.get("found"):
+    if tf and tf.get("found") and not provider:
         pts += 35
         fam = ", ".join(tf.get("malware") or [])
         reasons.append("ThreatFox: known malicious IOC" + (f" ({fam})" if fam else ""))
         flags.append({"cat": "Known bad", "detail": "ThreatFox IOC" + (f" ({fam})" if fam else "")})
 
     uh = result.get("urlhaus")
-    if uh and uh.get("found"):
+    if uh and uh.get("found") and not provider:
         pts += 35
         reasons.append(f"URLhaus: known malware host ({uh.get('url_count', '?')} URLs)")
         flags.append({"cat": "Known bad", "detail": "URLhaus malware host"})
 
     otx = result.get("otx")
-    if otx and otx.get("pulse_count", 0) > 0:
+    if otx and otx.get("pulse_count", 0) > 0 and not provider:
         named = (otx.get("malware_families") or []) + (otx.get("adversaries") or [])
         if named:
             pts += 20
