@@ -1637,6 +1637,14 @@ def score(result):
     # curated, universally-trusted allowlist, so trusting the domain itself is safe.
     provider = bool(result.get("is_provider"))
 
+    # Domain isn't in DNS at all → it doesn't exist. Don't score it like a real domain.
+    if result.get("unresolved"):
+        return {
+            "score": 0, "verdict": "No DNS Record", "flags": [],
+            "reasons": ["Domain has no DNS records (no A / MX / NS) and no registration — it does not "
+                        "resolve and appears unregistered or inactive."],
+        }
+
     vt = result.get("vt")
     if vt and not provider:
         s = vt.get("last_analysis_stats", {})
@@ -2008,6 +2016,11 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "freemail": reg_dom in FREEMAIL_DOMAINS,
         "disposable": reg_dom in DISPOSABLE_DOMAINS,
     }
+    # No DNS presence at all (no A/AAAA/MX/NS) and no registration record = the domain does not exist /
+    # is unregistered. Missing SPF/DMARC is meaningless for a domain that isn't even in DNS, so this gets
+    # its own honest state rather than being scored like a real-but-weakly-protected domain.
+    result["unresolved"] = (not (res["a"] or res["aaaa"] or res["mx"] or res["ns"])) and reg_date is None
+
     # For a consumer mail provider (gmail.com, outlook.com, ...) the domain-level intel describes the
     # PROVIDER, not the individual mailbox — so a clean/imperfect domain neither clears nor condemns the
     # specific sender. Flag this so the UI + scoring don't misread the provider as the sender.

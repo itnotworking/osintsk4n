@@ -210,6 +210,7 @@ header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
 .verdict.lowmod .val { color: var(--warn); }
 .verdict.suspicious .val { color: var(--warn); }
 .verdict.malicious  .val { color: var(--crit); }
+.verdict.neutral .val { color: var(--muted); }
 
 .tags { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 0; }
 .tag {

@@ -191,7 +191,7 @@ function lockTicketHeight() {
 }
 
 function verdictClass(v) {
-  return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious"})[v] || "low";
+  return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious","No DNS Record":"neutral"})[v] || "low";
 }
 // Ring colour escalates with the actual score — more severe the higher it goes.
 function ringColor(score) {
@@ -215,6 +215,11 @@ const FLAG_TIPS = {
 };
 function verdictBanner(d) {
   const cls = verdictClass(d.verdict);
+  const unresolved = !!d.unresolved;               // domain isn't in DNS at all → no risk score applies
+  const ring = unresolved ? "#8b8b96" : ringColor(d.score);
+  const ringNum = unresolved ? "—" : d.score;
+  const pct = unresolved ? 0 : d.score;
+  const sub = unresolved ? "does not resolve — no DNS records" : ("risk " + d.score + "/100");
   const tags = (d.flags || []).map(f => {
     const tip = FLAG_TIPS[f.cat] || "";
     return '<span class="tag"' + (tip ? ' title="' + esc(tip) + '"' : '') +
@@ -222,11 +227,11 @@ function verdictBanner(d) {
   }).join("");
   return '' +
     '<div class="verdict ' + cls + ' fade-in">' +
-      '<div class="score-ring" style="--pct:' + d.score + ';--ring:' + ringColor(d.score) + '"><i>' + d.score + '</i></div>' +
+      '<div class="score-ring" style="--pct:' + pct + ';--ring:' + ring + '"><i>' + ringNum + '</i></div>' +
       '<div class="v-main">' +
         '<div class="label">Verdict</div>' +
         '<div class="val">' + esc(d.verdict) + '</div>' +
-        '<div class="ioc">' + esc(d.defanged) + '  ·  risk ' + d.score + '/100</div>' +
+        '<div class="ioc">' + esc(d.defanged) + '  ·  ' + esc(sub) + '</div>' +
         (tags ? '<div class="tags">' + tags + '</div>' : '') +
       '</div>' +
     '</div>' +
@@ -238,6 +243,13 @@ function verdictBanner(d) {
 
 // One/two-sentence plain-English verdict explanation.
 function buildBrief(d) {
+  if (d.unresolved) {
+    const what = (d.kind === "email" ? "email domain" : "domain") + " (" + d.defanged + ")";
+    return "This " + what + " has no DNS records — no A, MX, or NS entries and no registration — so it does not resolve and appears to be unregistered or inactive. " +
+      (d.kind === "email"
+        ? "Because the domain does not exist, this address cannot receive mail and is not a valid or deliverable sender."
+        : "It cannot currently host a website or receive email. This is not evidence of malice — the name simply is not live.");
+  }
   const plain = ({
     "Likely Malicious": "likely malicious", "Suspicious": "suspicious",
     "Low–Moderate": "low-to-moderate risk", "Likely Legitimate": "likely legitimate"
@@ -264,16 +276,21 @@ function cards(d) {
   if (d.kind === "hash") return hashCards(d);
   const out = [];
 
+  // Non-existent domain: everything below is empty. Explain it up front so the blank cards make sense.
+  if (d.unresolved)
+    out.push(card("About this domain", '<pre class="muted" style="white-space:pre-wrap;margin:0">' + esc(d.defanged + " has no DNS records — no A, MX, or NS entries and no registration. It does not resolve and appears to be unregistered or inactive, so the details below are mostly empty. This is not evidence of malice — the name simply is not live.") + '</pre>'));
+
   // Consumer-provider context: domain intel describes the provider, not the mailbox. Say so up front.
   const provider = !!d.is_provider;
-  if (provider && d.provider_note)
+  if (!d.unresolved && provider && d.provider_note)
     out.push(card("About this address", '<pre class="muted" style="white-space:pre-wrap;margin:0">' + esc(d.provider_note) + '</pre>'));
 
   // Email authentication posture — the BEC card
   const dmarc = d.dmarc_parsed, spf = d.spf_parsed;
-  // For a big provider, its p=none / neutral SPF is the provider's own choice — not a risk about the sender.
-  const dmarcBad = !provider && (!dmarc || (dmarc.policy || "none").toLowerCase() === "none");
-  const spfBad = !provider;
+  // For a big provider (or a non-existent domain) missing SPF/DMARC isn't a spoofing risk about a sender.
+  const noAuthRisk = provider || d.unresolved;
+  const dmarcBad = !noAuthRisk && (!dmarc || (dmarc.policy || "none").toLowerCase() === "none");
+  const spfBad = !noAuthRisk;
   out.push(card("Email Auth Posture (BEC)",
     kvrow("DMARC", dmarc ? "p=" + dmarc.policy + (dmarc.pct && dmarc.pct !== "100" ? " pct=" + dmarc.pct : "") : "MISSING", dmarcBad ? "bad" : "good", "DMARC tells receivers what to do with spoofed mail. p=reject (block) is strongest; p=none or MISSING means the domain is easy to spoof (a BEC risk).") +
     kvrow("SPF", spf ? spf.policy : "MISSING", spf ? (spf.policy.includes("dangerous") ? "bad" : "good") : (spfBad ? "bad" : "good"), "SPF lists which servers may send mail for this domain. MISSING makes spoofing easier.") +
@@ -888,6 +905,7 @@ function selectTicket(fmt) {
 }
 
 function recAction(d) {
+  if (d.unresolved) return "No action needed on the name itself — it has no DNS records and does not resolve (appears unregistered or inactive). If it was expected to be live, double-check the spelling. If a message claimed to come from it, treat that claim as forged: the domain cannot send or receive mail.";
   if (d.kind === "hash") return ({
     "Likely Malicious": "Block this hash in EDR (CrowdStrike Falcon); hunt for the file across endpoints; quarantine/purge any email carrying it (Mimecast).",
     "Suspicious": "Detonate in a sandbox and monitor; block pending analysis if it arrived via email.",
@@ -977,7 +995,14 @@ function fmtSecurity(d) {
   L.push("SECURITY TEAM — TRIAGE REPORT");
   L.push("");
   L.push("IOC:      " + d.defanged + "  (" + d.kind + ")");
-  L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  L.push("Verdict:  " + d.verdict + (d.unresolved ? "" : "  (risk " + d.score + "/100)"));
+  if (d.unresolved) {
+    L.push("DNS:      no records (no A / MX / NS); no registration found");
+    L.push("Status:   does not resolve — appears unregistered or inactive");
+    L.push("");
+    L.push("Recommended action: " + recAction(d));
+    return L.join("\n");
+  }
   if (d.ip) L.push("Hosting:  " + d.ip + "  [" + (i.country || "?") + " · " + (i.org || i.isp || "?") + "]");
   if (d.registered) L.push("Domain:   registered " + d.registered.slice(0, 10) + (d.age_days != null ? " (" + d.age_days + "d old)" : ""));
   if (d.mx_provider) L.push("Mail:     " + d.mx_provider);
@@ -1061,6 +1086,13 @@ function stakeholderPoints(d) {
   if (d.kind === "ip") return ipPoints(d);
   if (d.kind === "cidr") return cidrPoints(d);
   if (d.kind === "hash") return hashPoints(d);
+  if (d.unresolved) {
+    const p = ["This " + (d.kind === "email" ? "email domain" : "domain") + " has no DNS records (no A, MX, or NS) and no registration — it does not resolve and appears unregistered or inactive."];
+    p.push(d.kind === "email"
+      ? "Because the domain does not exist, the address cannot receive mail and is not a valid sender."
+      : "It cannot host a website or receive email right now. This is not malicious in itself — the name simply is not live.");
+    return p;
+  }
   const pts = [];
   // Address-level compromise is the strongest email signal — surface it first (applies to any provider).
   if (d.hudsonrock && d.hudsonrock.compromised)
@@ -1104,7 +1136,7 @@ function stakeholderPoints(d) {
 function riskRating(d) {
   return ({
     "Likely Malicious": "HIGH", "Suspicious": "ELEVATED",
-    "Low–Moderate": "LOW–MODERATE", "Likely Legitimate": "LOW"
+    "Low–Moderate": "LOW–MODERATE", "Likely Legitimate": "LOW", "No DNS Record": "N/A"
   })[d.verdict] || "UNKNOWN";
 }
 
@@ -1133,7 +1165,7 @@ function fmtExecutive(d) {
     "Suspicious": "This domain shows warning signs and should be treated with caution pending a brief investigation.",
     "Low–Moderate": "This domain carries limited risk. Normal precautions and monitoring are sufficient.",
     "Likely Legitimate": "This domain appears legitimate and poses no significant risk to the organization at this time."
-  })[d.verdict] || "Manual review required.";
+  })[d.verdict] || (d.unresolved ? "This name has no DNS records and does not resolve — it appears unregistered or inactive, and cannot host a website or send/receive mail." : "Manual review required.");
   const decision = (hash ? {
     "Likely Malicious": "Authorize blocking the hash in EDR and purging any email carrying the file.",
     "Suspicious": "Approve sandbox analysis and containment before the file is used.",
@@ -1154,7 +1186,7 @@ function fmtExecutive(d) {
     "Suspicious": "Approve quarantine and a short investigation before any release.",
     "Low–Moderate": "No immediate action; continue routine monitoring.",
     "Likely Legitimate": "No action required."
-  })[d.verdict] || "Defer to the security team.";
+  })[d.verdict] || (d.unresolved ? "No action required on the name itself; verify the spelling if it was expected to be live, and treat any mail claiming to be from it as forged." : "Defer to the security team.");
 
   const L = [];
   L.push("EXECUTIVE SECURITY BRIEF");
@@ -1182,7 +1214,15 @@ function fmtEndUser(d) {
     "Suspicious": "⚠ This looks SUSPICIOUS — be very careful.",
     "Low–Moderate": "This is probably okay, but stay alert.",
     "Likely Legitimate": "✓ This looks SAFE."
-  })[d.verdict] || "Unable to determine — check with IT Security.";
+  })[d.verdict] || (d.unresolved ? "This name doesn't exist online — it has no records at all." : "Unable to determine — check with IT Security.");
+  if (d.unresolved) {
+    return ["IS THIS SAFE?", "", "We checked: " + d.defanged, "", "Result: " + result, "",
+      "In plain terms: This web/email name isn't set up on the internet — there's nothing there. It can't host a real website or send or receive email.",
+      "", "Recommended action — what you should do:",
+      "• If you typed it yourself, double-check the spelling.",
+      "• If an email or message said it came from this name, be suspicious — a name that doesn't exist can't really send mail, so the sender was likely faked.",
+      "• When in doubt, forward it to IT Security rather than replying or clicking."].join("\n");
+  }
   const plain = (d.kind === "hash" ? {
     "Likely Malicious": "This file is identified as malware.",
     "Suspicious": "This file has some suspicious characteristics.",
