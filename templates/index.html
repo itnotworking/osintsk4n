@@ -826,23 +826,42 @@ async function runLiveScan() {
   if (!current) return;
   const body = $("urlscanBody");
   const target = current.url || current.domain;
-  body.innerHTML = '<div class="loader fade-in" style="margin:6px 0"><div class="loader-bar"><i></i></div>' +
-    '<div class="loader-step" id="liveStep">Submitting <b>' + esc(target) + '</b> to urlscan…</div></div>';
+  // Same animated bar + percentage as the main analyze loader (fill width is driven by JS).
+  body.innerHTML = '<div class="loader fade-in" style="margin:6px 0"><div class="loader-bar"><i id="liveFill"></i></div>' +
+    '<div class="loader-step"><span class="lstep" id="liveStep">Submitting <b>' + esc(target) + '</b> to urlscan…</span>' +
+    '<span class="lpct" id="livePct">0%</span></div></div>';
+  let pct = 0;
+  const timer = setInterval(function () {
+    // Ease toward ~92% (real progress is unknown); urlscan is slower than analyze, so ease gently.
+    pct += Math.max(0.4, (92 - pct) * 0.045);
+    if (pct > 92) pct = 92;
+    const fill = $("liveFill"), p = $("livePct");
+    if (fill) fill.style.width = pct + "%";
+    if (p) p.textContent = Math.round(pct) + "%";
+  }, 500);
+  const finishBar = function () {
+    clearInterval(timer);
+    const fill = $("liveFill"), p = $("livePct");
+    if (fill) fill.style.width = "100%";
+    if (p) p.textContent = "100%";
+  };
   try {
     const f = new FormData(); f.append("target", target);
     const sub = await (await fetch("/urlscan/submit", { method: "POST", body: f })).json();
-    if (!sub.uuid) { body.innerHTML = '<div class="v bad">' + esc(sub.error || "Submit failed") + '</div>' + liveBtn('▶ Retry'); return; }
+    if (!sub.uuid) { clearInterval(timer); body.innerHTML = '<div class="v bad">' + esc(sub.error || "Submit failed") + '</div>' + liveBtn('▶ Retry'); return; }
     const step = $("liveStep");
     // Poll for the result (scans take ~10-30s).
     for (let i = 0; i < 16; i++) {
       await new Promise(r => setTimeout(r, 3000));
       if (step) step.innerHTML = 'Scanning <b>' + esc(target) + '</b>… (' + ((i + 1) * 3) + 's)';
       const res = await (await fetch("/urlscan/result/" + sub.uuid + "?reg=" + encodeURIComponent(current.registrable || ""))).json();
-      if (res.ready) { renderLiveResult(res); return; }
+      if (res.ready) { finishBar(); await new Promise(r => setTimeout(r, 180)); renderLiveResult(res); return; }
     }
+    clearInterval(timer);
     body.innerHTML = '<div class="muted">Scan is taking longer than expected. ' +
       '<a href="https://urlscan.io/result/' + esc(sub.uuid) + '/" target="_blank" rel="noopener">View on urlscan ↗</a></div>' + liveBtn('▶ Re-scan live');
   } catch (e) {
+    clearInterval(timer);
     body.innerHTML = '<div class="v bad">Live scan failed (network).</div>' + liveBtn('▶ Retry');
   }
 }
