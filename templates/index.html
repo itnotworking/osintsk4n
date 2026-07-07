@@ -242,7 +242,65 @@ function verdictBanner(d) {
 }
 
 // One/two-sentence plain-English verdict explanation.
+// Synthesized IP summary — a 5-second "what this is + why it's flagged + what to do", front-loaded.
+function ipBrief(d) {
+  const i = d.info || {}, ab = d.abuse || {}, vt = d.vt || {}, otx = d.otx || {},
+        gn = d.greynoise || {}, sh = d.shodan || {}, rip = d.rdap_ip || {};
+  const stats = vt.last_analysis_stats || {};
+  const owner = i.isp || i.org || vt.as_owner || ab.isp || rip.name || null;
+  const usage = (ab.usageType || "").toLowerCase();
+  const hosting = i.hosting || /data ?cent|hosting|server|transit|colo/.test(usage);
+  const anon = i.proxy || ab.isTor || /proxy|vpn|tor/.test(usage);
+
+  // 1) What it is.
+  let s1 = "This is " + (hosting ? "a data-center / hosting IP" : "an IP") + (owner ? " operated by " + owner : "");
+  if (ab.isTor) s1 += ", running as a Tor exit node";
+  else if (anon) s1 += ", flagged as proxy / VPN / Tor infrastructure";
+  s1 += (i.city && (i.countryCode || i.country)) ? " (" + i.city + ", " + (i.countryCode || i.country) + ")." : ".";
+
+  // 2) Why it's flagged — strongest signals first, capped at 3 for a fast read.
+  const why = [];
+  if (d.threatfox && d.threatfox.found) why.push("it matches a known malware / C2 indicator in ThreatFox");
+  if (d.urlhaus && d.urlhaus.found) why.push("it has hosted malware (URLhaus, " + ((d.urlhaus.url_count || 0)) + " URLs)");
+  const sc = ab.abuseConfidenceScore || 0;
+  if (sc >= 25) why.push("AbuseIPDB rates it " + sc + "/100" + (ab.totalReports ? " across " + ab.totalReports + " reports" : "") +
+    (ab.top_categories && ab.top_categories.length ? " (" + ab.top_categories.slice(0, 2).join(", ") + ")" : ""));
+  const mal = stats.malicious || 0;
+  if (mal > 0) {
+    const tot = (stats.malicious || 0) + (stats.suspicious || 0) + (stats.harmless || 0) + (stats.undetected || 0);
+    why.push(mal + (tot ? " of " + tot : "") + " security vendors flag it malicious");
+  }
+  if (gn.observed && gn.classification === "malicious") why.push("GreyNoise has caught it scanning the internet");
+  if ((otx.pulse_count || 0) > 0) {
+    const tg = (otx.tags || []).filter(t => /honeypot|honeynet|malware|c2|botnet|scan|brute|phish|exploit|rat|trojan|spam/i.test(t)).slice(0, 2);
+    const named = (otx.malware_families || []).concat(otx.adversaries || []).slice(0, 2);
+    why.push(otx.pulse_count + " AlienVault OTX threat report" + (otx.pulse_count === 1 ? "" : "s") +
+      (named.length ? " (" + named.join(", ") + ")" : (tg.length ? " (tagged " + tg.join(", ") + ")" : "")));
+  }
+  if (sh.vulns && sh.vulns.length) why.push("it exposes services with known CVEs (" + sh.vulns.slice(0, 2).join(", ") + ")");
+  const oddPorts = (sh.ports || []).filter(p => [80, 443, 22, 25, 53, 110, 143, 993, 995, 587, 465].indexOf(p) < 0);
+  if (oddPorts.length && why.length < 3) why.push("it exposes unusual open ports (" + oddPorts.slice(0, 4).join(", ") + ")");
+
+  let s2 = "";
+  if (why.length) {
+    const w = why.slice(0, 3);
+    w[0] = w[0].charAt(0).toUpperCase() + w[0].slice(1);
+    s2 = w.join("; ") + ".";
+  }
+
+  // 3) What to do — posture keyed to the verdict.
+  const posture = ({
+    "Likely Malicious": "Treat it as hostile — consider blocking and hunting for connections to it.",
+    "Suspicious": "Treat traffic to or from it as untrusted and corroborate against your own logs before acting.",
+    "Low–Moderate": "Low confidence of malice — note it and watch for repeat activity.",
+    "Likely Legitimate": "No significant risk indicators — appears to be normal infrastructure."
+  })[d.verdict] || "";
+
+  return [s1, s2, posture].filter(Boolean).join(" ");
+}
+
 function buildBrief(d) {
+  if (d.kind === "ip") return ipBrief(d);
   if (d.unresolved) {
     const what = (d.kind === "email" ? "email domain" : "domain") + " (" + d.defanged + ")";
     return "This " + what + " has no DNS records — no A, MX, or NS entries and no registration — so it does not resolve and appears to be unregistered or inactive. " +
