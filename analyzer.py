@@ -296,6 +296,14 @@ def parse_target(raw):
         kind = "domain"
         domain = value.lower().strip(".")
 
+    # 'www.' is a ubiquitous alias for the apex — normalize it so 'www.example.com' and 'example.com'
+    # triage IDENTICALLY (same DNS / VT / DMARC / urlscan lookups → same verdict). Strip only a leading
+    # www label, and only when a real domain still remains (>=2 dots) so we never mangle e.g. 'www.com'.
+    if domain and domain.startswith("www.") and domain.count(".") >= 2:
+        domain = domain[4:]
+        if kind == "domain":
+            value = domain
+
     # Validate the extracted domain — unless it's a bare IP target.
     is_ip = False
     try:
