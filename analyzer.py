@@ -65,6 +65,28 @@ DISPOSABLE_DOMAINS = {
     "emailondeck.com", "burnermail.io", "mailnesia.com", "tempinbox.com",
 }
 
+# Major legitimate hosting / CDN / user-content platforms that attackers routinely ABUSE to host malware.
+# These registrable domains appear heavily in URLhaus / ThreatFox as "malware hosts" — but the malicious
+# thing is a specific URL/path (github.com/attacker/x.exe), NOT the platform. So a feed match on the bare
+# domain must NOT flip it to malicious; it's reframed as "malware has been hosted here — judge the URL".
+HOSTING_PLATFORMS = {
+    # code / repos
+    "github.com", "githubusercontent.com", "github.io", "gitlab.com", "bitbucket.org", "sourceforge.net",
+    # cloud storage / CDN
+    "amazonaws.com", "cloudfront.net", "googleapis.com", "googleusercontent.com", "gstatic.com",
+    "azureedge.net", "windows.net", "azurewebsites.net", "cloudflare.com", "workers.dev", "pages.dev",
+    "r2.dev", "fastly.net", "akamaihd.net", "digitaloceanspaces.com", "backblazeb2.com", "wasabisys.com",
+    # file sharing / paste
+    "dropbox.com", "dropboxusercontent.com", "box.com", "mediafire.com", "mega.nz", "wetransfer.com",
+    "pastebin.com", "paste.ee", "gofile.io", "file.io", "anonfiles.com",
+    # chat / social CDNs
+    "discord.com", "discordapp.com", "discordapp.net", "telegram.org", "t.me", "telegra.ph",
+    # app hosting / site builders / tunnels
+    "herokuapp.com", "netlify.app", "vercel.app", "glitch.me", "repl.co", "replit.dev", "ngrok.io",
+    "ngrok-free.app", "trycloudflare.com", "web.app", "firebaseapp.com", "blogspot.com", "wordpress.com",
+    "weebly.com", "wixsite.com", "google.com", "sharepoint.com", "1drv.ms",
+}
+
 # Brands most often impersonated in BEC / phishing. Used for look-alike scoring.
 COMMON_TARGETS = [
     "microsoft.com", "office365.com", "outlook.com", "live.com",
@@ -1732,21 +1754,32 @@ def score(result):
         reasons.append("Google Safe Browsing: " + ", ".join(gsb.get("threats") or ["flagged"]))
         flags.append({"cat": "Known bad", "detail": "Google Safe Browsing hit"})
 
+    # A hosting/CDN platform (github.com, amazonaws.com, ...) legitimately appears in URLhaus/ThreatFox
+    # because attackers host malware ON it — that's abuse of the platform, not the platform being bad.
+    # Don't let a domain-level feed match flip the verdict; surface it as context instead.
+    platform = bool(result.get("is_platform"))
+
     tf = result.get("threatfox")
-    if tf and tf.get("found") and not provider:
+    if tf and tf.get("found") and not provider and not platform:
         pts += 35
         fam = ", ".join(tf.get("malware") or [])
         reasons.append("ThreatFox: known malicious IOC" + (f" ({fam})" if fam else ""))
         flags.append({"cat": "Known bad", "detail": "ThreatFox IOC" + (f" ({fam})" if fam else "")})
 
     uh = result.get("urlhaus")
-    if uh and uh.get("found") and not provider:
+    if uh and uh.get("found") and not provider and not platform:
         pts += 35
         reasons.append(f"URLhaus: known malware host ({uh.get('url_count', '?')} URLs)")
         flags.append({"cat": "Known bad", "detail": "URLhaus malware host"})
 
+    if platform and ((tf and tf.get("found")) or (uh and uh.get("found"))):
+        n = (uh or {}).get("url_count")
+        reasons.append("Malware has been hosted on this platform by third parties"
+                       + (f" ({n} URLs in URLhaus)" if n else "")
+                       + " — expected for a large hosting service; assess the specific URL, not the domain.")
+
     otx = result.get("otx")
-    if otx and otx.get("pulse_count", 0) > 0 and not provider:
+    if otx and otx.get("pulse_count", 0) > 0 and not provider and not platform:
         named = (otx.get("malware_families") or []) + (otx.get("adversaries") or [])
         if named:
             pts += 20
@@ -1929,15 +1962,38 @@ def _analyze_ip(parsed, ip, raw_input):
 
 
 def _analyze_domain(parsed, domain, ip, raw_input):
-    # urlscan renders a DOMAIN as a website in a browser. That is meaningless (and actively
-    # misleading) for an EMAIL search — e.g. gmail.com's site redirects to Google sign-in, which
-    # is not a phishing signal about someone's mailbox. So skip the website scan for email.
     is_email = parsed["kind"] == "email"
+    reg_dom = parsed["registrable"]
+
+    # Phase 1 — fast DNS presence probe. If the name has no records of ANY kind it isn't in DNS
+    # (unregistered / does not exist), so return immediately with a clear "No DNS Record" result rather
+    # than grinding through the slow sources (RDAP, crt.sh, urlscan, OTX…). Keeps dead domains snappy.
+    dns_fut = {
+        "a":    _executor.submit(dns_lookup, domain, "A"),
+        "aaaa": _executor.submit(dns_lookup, domain, "AAAA"),
+        "mx":   _executor.submit(dns_lookup, domain, "MX"),
+        "ns":   _executor.submit(dns_lookup, domain, "NS"),
+    }
+    dns = {k: f.result() for k, f in dns_fut.items()}
+    if not (dns["a"] or dns["aaaa"] or dns["mx"] or dns["ns"]):
+        return {
+            "ok": True, "kind": parsed["kind"], "input": raw_input,
+            "domain": domain, "registrable": reg_dom,
+            "email": parsed["email"], "url": parsed["url"],
+            "ip": None, "is_ip": False, "defanged": defang(parsed["normalized"]),
+            "a": [], "aaaa": [], "mx": [], "ns": [], "cname": [], "soa": [], "txt": [], "dmarc": [],
+            "dkim": [], "rdap_events": {}, "lookalike": {"exact_brand": None, "flags": []},
+            "spf_parsed": None, "dmarc_parsed": None, "age_days": None, "registered": None,
+            "mx_provider": None, "high_risk_tld": False,
+            "unresolved": True,
+            "freemail": reg_dom in FREEMAIL_DOMAINS, "disposable": reg_dom in DISPOSABLE_DOMAINS,
+            "is_provider": False, "provider_note": None,
+            "is_platform": False, "platform_note": None,
+        }
+
+    # Phase 2 — the name exists in DNS; run the full pipeline (reuse the DNS we already fetched).
+    # urlscan renders a DOMAIN as a website, which is meaningless for an EMAIL search — skip it there.
     futures = {
-        "a":     _executor.submit(dns_lookup, domain, "A"),
-        "aaaa":  _executor.submit(dns_lookup, domain, "AAAA"),
-        "mx":    _executor.submit(dns_lookup, domain, "MX"),
-        "ns":    _executor.submit(dns_lookup, domain, "NS"),
         "cname": _executor.submit(dns_lookup, domain, "CNAME"),
         "soa":   _executor.submit(dns_lookup, domain, "SOA"),
         "txt":   _executor.submit(dns_txt_raw, domain, "TXT"),
@@ -1963,6 +2019,7 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "xon":   _executor.submit(xposedornot_email, parsed["email"]),
     }
     res = {k: f.result() for k, f in futures.items()}
+    res.update(dns)   # fold in the phase-1 DNS results (a / aaaa / mx / ns)
 
     age_days, reg_date = domain_age(res["rdap"])
     spf = parse_spf(res["txt"])
@@ -2030,6 +2087,15 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         f"mail infrastructure — not this specific mailbox. The sender itself is assessed by the Email "
         f"Reputation checks (breach & infostealer exposure), which look up the exact address."
     ) if result["is_provider"] else None
+
+    # For a big user-content / CDN platform (github.com, amazonaws.com, ...), threat feeds list malware
+    # HOSTED on it by third parties — that reflects abuse of the platform, not that the platform is bad.
+    result["is_platform"] = bool(parsed["kind"] in ("domain", "url") and reg_dom in HOSTING_PLATFORMS)
+    result["platform_note"] = (
+        f"{reg_dom} is a major hosting / content platform. Threat feeds (URLhaus, ThreatFox) list malware "
+        f"that third parties have hosted on it — this reflects abuse of the platform, not that {reg_dom} "
+        f"itself is malicious. Judge the specific URL or path, not the bare domain."
+    ) if result["is_platform"] else None
     return result
 
 
@@ -2043,6 +2109,10 @@ def build_summary(r):
         return build_ip_summary(r)
     lines = []
     lines.append(f"IOC:      {r['defanged']}  ({r['kind']})")
+    if r.get("unresolved"):
+        lines.append(f"Verdict:  {r['verdict']} — does not resolve")
+        lines.append("DNS:      no A / MX / NS records; appears unregistered or inactive")
+        return "\n".join(lines)
     lines.append(f"Verdict:  {r['verdict']}  (risk {r['score']}/100)")
     if r.get("ip"):
         loc = r.get("info") or {}

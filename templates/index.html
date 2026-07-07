@@ -280,6 +280,10 @@ function cards(d) {
   if (d.unresolved)
     out.push(card("About this domain", '<pre class="muted" style="white-space:pre-wrap;margin:0">' + esc(d.defanged + " has no DNS records — no A, MX, or NS entries and no registration. It does not resolve and appears to be unregistered or inactive, so the details below are mostly empty. This is not evidence of malice — the name simply is not live.") + '</pre>'));
 
+  // Hosting-platform context: threat-feed hits mean malware was hosted here, not that the platform is bad.
+  if (!d.unresolved && d.is_platform && d.platform_note)
+    out.push(card("About this domain", '<pre class="muted" style="white-space:pre-wrap;margin:0">' + esc(d.platform_note) + '</pre>'));
+
   // Consumer-provider context: domain intel describes the provider, not the mailbox. Say so up front.
   const provider = !!d.is_provider;
   if (!d.unresolved && provider && d.provider_note)
@@ -335,9 +339,9 @@ function cards(d) {
   out.push(card("AbuseIPDB (IP)", abuseBlock(d.abuse)));
 
   // Threat intel — actor/campaign correlation + known-bad feeds.
-  // OTX counts every pulse that MENTIONS the domain; for a big provider (gmail.com) that's a huge,
-  // meaningless number, so hide it there. The exact-match feeds below stay clean and are safe to show.
-  if (!provider) out.push(card("Threat Intel (OTX)", otxBlock(d.otx)));
+  // OTX counts every pulse that MENTIONS the domain; for a big provider (gmail.com) or hosting platform
+  // (github.com) that's a huge, meaningless number, so hide it there. The feeds below stay informative.
+  if (!provider && !d.is_platform) out.push(card("Threat Intel (OTX)", otxBlock(d.otx)));
   out.push(card("Threat Feeds", threatFeedsBlock(d)));
   out.push(card("IP Reputation", ipRepBlock(d)));
 
@@ -644,7 +648,10 @@ function otxBlock(o) {
 }
 
 function threatFeedsBlock(d) {
-  const gsb = d.gsb, tf = d.threatfox, uh = d.urlhaus;
+  const gsb = d.gsb, tf = d.threatfox, uh = d.urlhaus, plat = !!d.is_platform;
+  // On a hosting platform, feed matches mean third parties hosted malware here — not that the platform
+  // itself is bad. Render those as amber "hosted here" with a clarifying tip, not red "MALWARE HOST".
+  const platTip = "Third parties have hosted malware on this platform. This is abuse of the platform, not the platform being malicious — assess the specific URL/path, not the bare domain.";
   let html = "";
   // Google Safe Browsing
   if (!gsb) html += kvrow("Safe Browsing", keyOn('gsb') ? "unavailable" : "set GSB_API_KEY", "");
@@ -652,11 +659,11 @@ function threatFeedsBlock(d) {
   else html += kvrow("Safe Browsing", "clean", "good");
   // ThreatFox
   if (!tf) html += kvrow("ThreatFox", keyOn('abusech') ? "unavailable" : "set ABUSECH_API_KEY", "");
-  else if (tf.found) html += kvrow("ThreatFox", "KNOWN IOC" + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), "bad");
+  else if (tf.found) html += kvrow("ThreatFox", (plat ? "malware hosted here" : "KNOWN IOC") + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), plat ? "warn" : "bad", plat ? platTip : "");
   else html += kvrow("ThreatFox", "no match", "good");
   // URLhaus
   if (!uh) html += kvrow("URLhaus", keyOn('abusech') ? "unavailable" : "set ABUSECH_API_KEY", "");
-  else if (uh.found) html += kvrow("URLhaus", "MALWARE HOST · " + (uh.url_count || 0) + " URLs", "bad");
+  else if (uh.found) html += kvrow("URLhaus", (plat ? "malware hosted here · " : "MALWARE HOST · ") + (uh.url_count || 0) + " URLs", plat ? "warn" : "bad", plat ? platTip : "");
   else html += kvrow("URLhaus", "no match", "good");
   return html;
 }
@@ -1097,11 +1104,14 @@ function stakeholderPoints(d) {
   // Address-level compromise is the strongest email signal — surface it first (applies to any provider).
   if (d.hudsonrock && d.hudsonrock.compromised)
     pts.push("This exact address appears in infostealer-malware logs" + (d.hudsonrock.last_date ? " (most recently " + d.hudsonrock.last_date + ")" : "") + " — its saved credentials were stolen, so the account may be compromised and used for account-takeover or phishing.");
-  // Known-bad / actor correlation next — strongest domain signals. Skipped for consumer providers, whose
-  // domains are 'mentioned' in threat feeds as artifacts (not because the provider itself is malicious).
-  if (!d.is_provider && ((d.gsb && d.gsb.flagged) || (d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found)))
+  // Hosting platform: feed hits mean third parties hosted malware here, not that the platform is bad.
+  if (d.is_platform && ((d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found)))
+    pts.push("This is a major hosting/content platform" + (d.urlhaus && d.urlhaus.found ? " (" + (d.urlhaus.url_count || 0) + " malware URLs in URLhaus)" : "") + ". Third parties abuse it to host malware, which is why it appears in threat feeds — this does not mean the platform itself is malicious. Judge the specific URL or path, not the bare domain.");
+  // Known-bad / actor correlation next — strongest domain signals. Skipped for consumer providers (whose
+  // domains are 'mentioned' in threat feeds as artifacts) and for hosting platforms (abused, not bad).
+  if (!d.is_provider && !d.is_platform && ((d.gsb && d.gsb.flagged) || (d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found)))
     pts.push("It appears in recognized threat databases as known-malicious infrastructure.");
-  if (!d.is_provider && d.otx && d.otx.pulse_count > 0 && ((d.otx.malware_families || []).length || (d.otx.adversaries || []).length))
+  if (!d.is_provider && !d.is_platform && d.otx && d.otx.pulse_count > 0 && ((d.otx.malware_families || []).length || (d.otx.adversaries || []).length))
     pts.push("It is linked to reported threat activity (associated malware or threat actors).");
   if (d.ipqs && (d.ipqs.recent_abuse || (d.ipqs.fraud_score || 0) >= 85))
     pts.push("This email address shows signs of fraudulent or abusive activity.");
