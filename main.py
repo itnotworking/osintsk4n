@@ -26,9 +26,13 @@ _hits = defaultdict(deque)
 
 
 def _client_ip(request: Request) -> str:
+    # Render is a single trusted proxy that appends the real client IP as the LAST X-Forwarded-For
+    # entry. Use that — the leftmost values are client-supplied and can be spoofed to dodge the limiter.
     fwd = request.headers.get("x-forwarded-for")
     if fwd:
-        return fwd.split(",")[0].strip()
+        parts = [p.strip() for p in fwd.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     return request.client.host if request.client else "unknown"
 
 
@@ -49,10 +53,13 @@ async def security_headers(request: Request, call_next):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    resp.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=(), usb=(), payment=()"
     resp.headers["Content-Security-Policy"] = (
         "default-src 'self'; img-src 'self' https: data:; "
         "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
-        "connect-src 'self'; base-uri 'none'; form-action 'self'"
+        "connect-src 'self'; base-uri 'none'; form-action 'self'; "
+        "object-src 'none'; frame-ancestors 'none'"
     )
     return resp
 

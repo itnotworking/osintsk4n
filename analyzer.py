@@ -1210,7 +1210,7 @@ def emailrep_lookup(email):
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     if EMAILREP_API_KEY:
         headers["Key"] = EMAILREP_API_KEY
-    data = safe_get(f"https://emailrep.io/{email}", headers=headers, timeout=10)
+    data = safe_get(f"https://emailrep.io/{quote(email)}", headers=headers, timeout=10)
     if not data or "reputation" not in data:
         return None
     det = data.get("details") or {}
@@ -1857,6 +1857,14 @@ def analyze(raw_input):
 
     domain = parsed["domain"]
     is_ip = parsed.get("is_ip", False)
+
+    # Refuse private/loopback/reserved IPs — nothing to triage against public sources, and it keeps
+    # internal addresses out of the pipeline entirely.
+    if is_ip and not is_public_ip(domain):
+        return {"ok": False, "input": raw_input,
+                "error": "That is a private, loopback, or reserved IP — there is nothing to triage "
+                         "against public threat-intelligence sources."}
+
     ip = domain if is_ip else resolve_ip(domain)
 
     if parsed["kind"] == "hash":

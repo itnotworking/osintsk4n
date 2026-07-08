@@ -42,7 +42,9 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// only allow http(s) URLs from external data into href/src; block javascript:/data: schemes
+const safeUrl = u => /^https?:\/\//i.test(String(u || "")) ? u : "#";
 
 let loaderTimer = null;
 const LOADER_STEPS = [
@@ -456,7 +458,7 @@ function sandboxBlock(d) {
       html += (sc != null ? kvrow("Triage score", sc + "/10", sc >= 8 ? "bad" : (sc >= 5 ? "warn" : "good"), "Hatching Triage sandbox score (0-10); 8+ is malicious.") : kvrow("Triage", "analyzed")) +
         (tr.family && tr.family.length ? kvrow("Family", tr.family.join(", "), "bad") : "") +
         (tr.tags && tr.tags.length ? kvrow("Tags", tr.tags.join(", ")) : "") +
-        (tr.url ? '<div class="scanrow" style="margin-top:6px"><a href="' + esc(tr.url) + '" target="_blank" rel="noopener">View Triage report ↗</a></div>' : "");
+        (tr.url ? '<div class="scanrow" style="margin-top:6px"><a href="' + esc(safeUrl(tr.url)) + '" target="_blank" rel="noopener">View Triage report ↗</a></div>' : "");
     }
   } else if (keyOn('triage')) html += kvrow("Triage", "unavailable", "");
   return html;
@@ -851,7 +853,7 @@ function urlscanBlock(u) {
   info += urlscanVerdictRows(u);
   info += kvrow("Recent scans", u.count || u.results.length);
   info += u.results.slice(0, 4).map(r =>
-    '<div class="scanrow"><a href="' + esc(r.result) + '" target="_blank" rel="noopener">' +
+    '<div class="scanrow"><a href="' + esc(safeUrl(r.result)) + '" target="_blank" rel="noopener">' +
     esc(r.url || "") + '</a><div class="muted" style="font-size:11px">' +
     esc((r.time || "").slice(0, 10)) + '</div></div>').join("");
   info += '<div style="margin-top:20px">' + liveBtn('▶ Re-scan live') + '</div>';
@@ -879,8 +881,8 @@ function urlscanVerdictRows(u) {
 }
 
 function shot(url, link, caption) {
-  return '<a href="' + esc(link || url) + '" target="_blank" rel="noopener">' +
-    '<img src="' + esc(url) + '" alt="urlscan screenshot" loading="lazy"></a>' +
+  return '<a href="' + esc(safeUrl(link || url)) + '" target="_blank" rel="noopener">' +
+    '<img src="' + esc(safeUrl(url)) + '" alt="urlscan screenshot" loading="lazy"></a>' +
     (caption ? '<div class="us-cap">' + esc(caption) + '</div>' : '');
 }
 
@@ -931,7 +933,7 @@ function renderLiveResult(res) {
   const body = $("urlscanBody");
   let info = '<div class="muted" style="font-size:11px;margin-bottom:12px">↻ Fresh scan · ' + esc((res.time || "").slice(0, 16).replace("T", " ")) + '</div>';
   info += urlscanVerdictRows(res);
-  if (res.final_url) info += '<div class="scanrow"><a href="' + esc(res.result) + '" target="_blank" rel="noopener">' + esc(res.final_url) + '</a></div>';
+  if (res.final_url) info += '<div class="scanrow"><a href="' + esc(safeUrl(res.result)) + '" target="_blank" rel="noopener">' + esc(res.final_url) + '</a></div>';
   info += '<div style="margin-top:20px">' + liveBtn('▶ Re-scan live') + '</div>';
   const danger = !!(res.redirect && res.redirect.offsite);
   const shotHtml = res.screenshot ? shot(res.screenshot, res.result, res.final_url) : "";
@@ -1423,7 +1425,7 @@ function tickerItem(it) {
   const tag = isKev ? ("⚠ " + (it.cve || "EXPLOITED")) : (it.source || "NEWS");
   return '<span class="tk-item' + (isKev ? ' kev' : '') + '">' +
     '<span class="tk-tag">' + esc(tag) + '</span>' +
-    '<a href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.title) + '</a></span>';
+    '<a href="' + esc(safeUrl(it.url)) + '" target="_blank" rel="noopener">' + esc(it.title) + '</a></span>';
 }
 async function loadTicker() {
   try {
