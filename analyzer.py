@@ -38,7 +38,7 @@ _executor = ThreadPoolExecutor(max_workers=16)
 # Reference data
 # --------------------------------------------------------------------------
 
-# TLDs disproportionately abused for phishing / malware / BEC.
+# TLDs commonly abused for phishing / malware
 HIGH_RISK_TLDS = {
     "zip", "mov", "tk", "ml", "ga", "cf", "gq", "top", "xyz", "click",
     "country", "kim", "work", "party", "gdn", "review", "stream", "download",
@@ -47,8 +47,7 @@ HIGH_RISK_TLDS = {
     "buzz", "monster", "quest", "cyou", "sbs", "lol", "live", "shop",
 }
 
-# Free / consumer mail providers — legitimate, but unusual for B2B senders
-# and a common BEC pivot ("CEO" mailing from a gmail lookalike).
+# Free / consumer mail providers — legit but unusual for a business sender
 FREEMAIL_DOMAINS = {
     "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "outlook.com",
     "hotmail.com", "live.com", "msn.com", "aol.com", "icloud.com", "me.com",
@@ -56,7 +55,7 @@ FREEMAIL_DOMAINS = {
     "zoho.com", "yandex.com", "mail.com", "tutanota.com", "hey.com",
 }
 
-# Throwaway providers — strong abuse signal for a business sender.
+# Throwaway providers — strong abuse signal
 DISPOSABLE_DOMAINS = {
     "mailinator.com", "guerrillamail.com", "10minutemail.com", "tempmail.com",
     "temp-mail.org", "throwawaymail.com", "yopmail.com", "trashmail.com",
@@ -65,10 +64,8 @@ DISPOSABLE_DOMAINS = {
     "emailondeck.com", "burnermail.io", "mailnesia.com", "tempinbox.com",
 }
 
-# Major legitimate hosting / CDN / user-content platforms that attackers routinely ABUSE to host malware.
-# These registrable domains appear heavily in URLhaus / ThreatFox as "malware hosts" — but the malicious
-# thing is a specific URL/path (github.com/attacker/x.exe), NOT the platform. So a feed match on the bare
-# domain must NOT flip it to malicious; it's reframed as "malware has been hosted here — judge the URL".
+# Big hosting / CDN / user-content platforms attackers abuse to host malware.
+# A feed match on the bare domain shouldn't flip the verdict — judge the URL.
 HOSTING_PLATFORMS = {
     # code / repos
     "github.com", "githubusercontent.com", "github.io", "gitlab.com", "bitbucket.org", "sourceforge.net",
@@ -87,7 +84,7 @@ HOSTING_PLATFORMS = {
     "weebly.com", "wixsite.com", "google.com", "sharepoint.com", "1drv.ms",
 }
 
-# Brands most often impersonated in BEC / phishing. Used for look-alike scoring.
+# Commonly impersonated brands, for look-alike scoring
 COMMON_TARGETS = [
     "microsoft.com", "office365.com", "outlook.com", "live.com",
     "google.com", "gmail.com", "apple.com", "icloud.com", "amazon.com",
@@ -98,8 +95,7 @@ COMMON_TARGETS = [
     "mimecast.com", "crowdstrike.com",
 ]
 
-# Common multi-label public suffixes so we can derive the registrable domain
-# without dragging in tldextract (and its cold-start PSL fetch).
+# Multi-label public suffixes, so we can skip the tldextract dependency
 MULTI_TLDS = {
     "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "ltd.uk", "plc.uk",
     "com.au", "net.au", "org.au", "gov.au", "edu.au", "co.nz", "com.br",
@@ -127,7 +123,7 @@ MX_PROVIDERS = [
     ("qq.com", "Tencent QQ Mail"),
 ]
 
-# Common DKIM selectors to probe (no enumeration is possible without these).
+# DKIM selectors to probe
 DKIM_SELECTORS = [
     "selector1", "selector2", "google", "default", "k1", "k2", "k3",
     "dkim", "mail", "smtp", "s1", "s2", "mandrill", "everlytickey1",
@@ -232,7 +228,7 @@ def parse_target(raw):
         result["error"] = "Illegal control characters in input."
         return result
 
-    # File hash? (MD5 / SHA1 / SHA256) — bare hex, must be checked before domain validation
+    # File hash — check before domain validation
     if re.fullmatch(r"[a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64}", value):
         htype = {32: "MD5", 40: "SHA1", 64: "SHA256"}[len(value)]
         h = value.lower()
@@ -244,7 +240,7 @@ def parse_target(raw):
         })
         return result
 
-    # CIDR range? (e.g. 185.220.101.0/24) — must be checked before URL parsing (both use "/")
+    # CIDR range — check before URL parsing (both use "/")
     if re.match(r"^[0-9a-fA-F:.]+/\d{1,3}$", value):
         try:
             net = ipaddress.ip_network(value, strict=False)
@@ -296,9 +292,7 @@ def parse_target(raw):
         kind = "domain"
         domain = value.lower().strip(".")
 
-    # 'www.' is a ubiquitous alias for the apex — normalize it so 'www.example.com' and 'example.com'
-    # triage IDENTICALLY (same DNS / VT / DMARC / urlscan lookups → same verdict). Strip only a leading
-    # www label, and only when a real domain still remains (>=2 dots) so we never mangle e.g. 'www.com'.
+    # Strip a leading 'www.' so it triages the same as the apex (keep a real domain behind it)
     if domain and domain.startswith("www.") and domain.count(".") >= 2:
         domain = domain[4:]
         if kind == "domain":
@@ -313,8 +307,7 @@ def parse_target(raw):
         pass
 
     if not is_ip and not _DOMAIN_RE.match(domain):
-        # Allow IDN/punycode that the regex might reject; try idna encode.
-        # But require an actual dot (TLD) so single-label junk ("not", "thing") is rejected.
+        # Allow IDN/punycode the regex rejects, but require a TLD dot
         try:
             domain.encode("idna")
             if "." not in domain:
@@ -427,7 +420,7 @@ def abuseipdb(ip, verbose=False):
                 counts[cid] = counts.get(cid, 0) + 1
         top = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:6]
         data["top_categories"] = [ABUSE_CATEGORIES.get(c, f"cat{c}") for c, _ in top]
-        data.pop("reports", None)   # drop the bulky raw array; we keep the summary
+        data.pop("reports", None)   # drop the raw array, keep the summary
     return data
 
 
@@ -560,8 +553,7 @@ def hybrid_analysis(file_hash):
     """Hybrid Analysis (Falcon Sandbox) — sandbox verdict/threat score/family for a hash."""
     if not file_hash or not HYBRID_API_KEY:
         return None
-    # /overview/{sha256} (the replacement for the deprecated /search/hash) only accepts SHA256.
-    # VT + MalwareBazaar still cover MD5/SHA1, so degrade gracefully rather than erroring.
+    # /overview only accepts SHA256; VT + MalwareBazaar cover MD5/SHA1
     if len(file_hash) != 64:
         return {"found": False, "note": "Hybrid Analysis lookup needs a SHA256 hash."}
     headers = {"api-key": HYBRID_API_KEY, "User-Agent": "Falcon Sandbox", "accept": "application/json"}
@@ -583,8 +575,7 @@ def hybrid_analysis(file_hash):
         return {"error": "request failed"}
     if not ov:
         return {"found": False}
-    # NOTE: overview "tags" is HA's full tag taxonomy (starts with junk "tag", then every
-    # family/tactic in their DB), NOT this sample's tags — unusable, so we omit it.
+    # overview "tags" is HA's whole taxonomy, not this sample's — omit it
     ftype = ov.get("type") or ov.get("type_short")
     if isinstance(ftype, list):
         ftype = ", ".join(str(x) for x in ftype)
@@ -692,9 +683,7 @@ def rdap_domain(domain):
 def urlscan_search(domain):
     """urlscan search + verdict for the most recent scan of this domain."""
     headers = {"API-Key": URLSCAN_API_KEY} if URLSCAN_API_KEY else None
-    # task.domain = the domain actually SUBMITTED for scanning (not every domain the
-    # page merely contacted) — avoids matching unrelated scans that just loaded our
-    # domain as a third-party resource, which produced bogus "redirect" findings.
+    # match on task.domain (the submitted domain), not every domain the page contacted
     data = safe_get(
         "https://urlscan.io/api/v1/search/",
         headers=headers,
@@ -716,7 +705,6 @@ def urlscan_search(domain):
             "uuid": r.get("_id"),
         })
 
-    # Pull the overall verdict for the most recent scan.
     verdict = None
     top_uuid = results[0].get("uuid") if results else None
     if top_uuid:
@@ -732,7 +720,7 @@ def urlscan_search(domain):
                 "categories": overall.get("categories", []),
             }
 
-    # Where did the most recent scan actually land? (off-domain redirect = red flag)
+    # where the most recent scan landed (off-domain redirect = red flag)
     top = results[0]
     final_domain = top.get("domain")
     if not final_domain and top.get("url"):
@@ -869,7 +857,7 @@ def otx_ip(ip):
         headers["X-OTX-API-KEY"] = OTX_API_KEY
     gen = safe_get(
         f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
-        headers=headers, timeout=16,   # OTX IP general is slow (~13s)
+        headers=headers, timeout=16,   # OTX IP general is slow
     )
     if not gen:
         return None
@@ -985,8 +973,8 @@ def _ioc_host(value):
     v = value.lower().strip()
     if "://" in v:
         v = urlparse(v).hostname or v
-    v = v.split("/")[0]   # strip any path
-    v = v.split(":")[0]   # strip any port
+    v = v.split("/")[0]
+    v = v.split(":")[0]
     return v
 
 
@@ -1255,8 +1243,8 @@ def _clean_text(s):
     m = re.match(r"^<!\[CDATA\[(.*?)\]\]>$", s, re.S)
     if m:
         s = m.group(1)
-    s = re.sub(r"<[^>]+>", "", s)        # strip any tags
-    s = html.unescape(s)                  # decode all HTML entities
+    s = re.sub(r"<[^>]+>", "", s)
+    s = html.unescape(s)
     return s.strip()
 
 
@@ -1313,7 +1301,7 @@ def threat_news():
     kev = fk.result()
     thn = [{**i, "kind": "news", "source": "The Hacker News"} for i in ft.result()]
     krebs = [{**i, "kind": "news", "source": "Krebs on Security"} for i in fr.result()]
-    # interleave KEV first (most actionable), then news
+    # KEV first (most actionable), then news
     items = kev + thn + krebs
     if items:
         _feed_cache["ts"] = now
@@ -1472,7 +1460,7 @@ def lookalike_check(registrable):
             "severity": "high",
         })
 
-    # Near-miss of a known brand (edit distance 1-2, but not an exact match)
+    # Near-miss of a known brand (edit distance 1-2)
     for target in COMMON_TARGETS:
         if name == target:
             return {"exact_brand": target, "flags": flags}
@@ -1483,7 +1471,7 @@ def lookalike_check(registrable):
                 "detail": f"Edit distance {dist} from '{target}'.",
                 "severity": "high",
             })
-        # Brand embedded as substring but not the real domain
+        # brand as substring but not the real domain
         brand = target.split(".")[0]
         if len(brand) >= 5 and brand in name and not name.startswith(brand + "."):
             flags.append({
@@ -1654,20 +1642,14 @@ def score(result):
         return score_ip(result)
     pts = 0
     reasons = []
-    # Categorized risk flags shown as chips in the verdict banner: {"cat": <category>, "detail": <specific>}.
-    # Category names are meaningful on their own (Spoofable, New domain, Redirect, Known bad, ...) so the
-    # analyst isn't left decoding a blanket label. "BEC" is applied ONLY to true email-spoofing signals.
+    # risk-flag chips: {"cat": <category>, "detail": <specific>}
     flags = []
 
-    # A consumer mail provider (gmail.com etc.) queried via an email address: EVERY domain-level source
-    # (age, SPF/DMARC, VirusTotal, AbuseIPDB, OTX, GSB, ThreatFox, URLhaus) describes the PROVIDER, not the
-    # sender. For a popular provider those feeds are either clean or noisy — e.g. gmail.com appears in
-    # thousands of OTX pulses purely as a mentioned artifact. So none of them may drive the verdict; the
-    # score rests only on address-level signals (disposable / EmailRep / IPQS). These 21 providers are a
-    # curated, universally-trusted allowlist, so trusting the domain itself is safe.
+    # For a freemail provider queried by address, domain-level feeds describe the
+    # provider not the sender — let only address-level signals drive the score.
     provider = bool(result.get("is_provider"))
 
-    # Domain isn't in DNS at all → it doesn't exist. Don't score it like a real domain.
+    # not in DNS → doesn't exist; don't score it like a real domain
     if result.get("unresolved"):
         return {
             "score": 0, "verdict": "No DNS Record", "flags": [],
@@ -1707,7 +1689,7 @@ def score(result):
 
     dmarc = result.get("dmarc_parsed")
     if provider:
-        pass  # provider's SPF/DMARC posture isn't a signal about the individual mailbox
+        pass  # provider SPF/DMARC says nothing about the mailbox
     elif dmarc is None:
         pts += 14
         reasons.append("No DMARC record — spoofable")
@@ -1762,9 +1744,8 @@ def score(result):
         reasons.append("Google Safe Browsing: " + ", ".join(gsb.get("threats") or ["flagged"]))
         flags.append({"cat": "Known bad", "detail": "Google Safe Browsing hit"})
 
-    # A hosting/CDN platform (github.com, amazonaws.com, ...) legitimately appears in URLhaus/ThreatFox
-    # because attackers host malware ON it — that's abuse of the platform, not the platform being bad.
-    # Don't let a domain-level feed match flip the verdict; surface it as context instead.
+    # hosting/CDN platforms show up in URLhaus/ThreatFox because malware is hosted
+    # on them — surface as context, don't let it flip the verdict
     platform = bool(result.get("is_platform"))
 
     tf = result.get("threatfox")
@@ -1802,8 +1783,7 @@ def score(result):
         pts += 15
         reasons.append("GreyNoise: source IP classified malicious")
 
-    # Address-level infostealer exposure (Hudson Rock) — applies to ANY address, provider or not, because
-    # it's about the specific mailbox, not the domain. A hit = the account's saved creds were harvested.
+    # infostealer exposure applies to any address (provider or not) — it's per-mailbox
     hr = result.get("hudsonrock")
     if hr and hr.get("compromised"):
         pts += 20
@@ -1973,9 +1953,8 @@ def _analyze_domain(parsed, domain, ip, raw_input):
     is_email = parsed["kind"] == "email"
     reg_dom = parsed["registrable"]
 
-    # Phase 1 — fast DNS presence probe. If the name has no records of ANY kind it isn't in DNS
-    # (unregistered / does not exist), so return immediately with a clear "No DNS Record" result rather
-    # than grinding through the slow sources (RDAP, crt.sh, urlscan, OTX…). Keeps dead domains snappy.
+    # Phase 1 — fast DNS presence probe. No records of any kind → bail early
+    # with "No DNS Record" instead of running the slow sources.
     dns_fut = {
         "a":    _executor.submit(dns_lookup, domain, "A"),
         "aaaa": _executor.submit(dns_lookup, domain, "AAAA"),
@@ -1999,8 +1978,7 @@ def _analyze_domain(parsed, domain, ip, raw_input):
             "is_platform": False, "platform_note": None,
         }
 
-    # Phase 2 — the name exists in DNS; run the full pipeline (reuse the DNS we already fetched).
-    # urlscan renders a DOMAIN as a website, which is meaningless for an EMAIL search — skip it there.
+    # Phase 2 — full pipeline (reuse the DNS already fetched); skip urlscan for email
     futures = {
         "cname": _executor.submit(dns_lookup, domain, "CNAME"),
         "soa":   _executor.submit(dns_lookup, domain, "SOA"),
@@ -2022,12 +2000,12 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "emailrep": _executor.submit(emailrep_lookup, parsed["email"]),
         "ipqs":  _executor.submit(ipqs_email, parsed["email"]),
         "disify": _executor.submit(disify_email, parsed["email"]),
-        # address-level reputation (free, no key) — only meaningful for an email query
+        # address-level reputation — only meaningful for an email query
         "hudsonrock": _executor.submit(hudsonrock_email, parsed["email"]),
         "xon":   _executor.submit(xposedornot_email, parsed["email"]),
     }
     res = {k: f.result() for k, f in futures.items()}
-    res.update(dns)   # fold in the phase-1 DNS results (a / aaaa / mx / ns)
+    res.update(dns)   # fold in the phase-1 DNS results
 
     age_days, reg_date = domain_age(res["rdap"])
     spf = parse_spf(res["txt"])
@@ -2035,7 +2013,7 @@ def _analyze_domain(parsed, domain, ip, raw_input):
     look = lookalike_check(parsed["registrable"])
     reg_dom = parsed["registrable"]
 
-    # Off-domain redirect detection: did the scanned page land on an unrelated domain?
+    # off-domain redirect: did the scan land on an unrelated domain?
     us = res["urlscan"]
     if us and us.get("final_domain"):
         final_reg = registrable_domain(us["final_domain"])
@@ -2081,14 +2059,10 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "freemail": reg_dom in FREEMAIL_DOMAINS,
         "disposable": reg_dom in DISPOSABLE_DOMAINS,
     }
-    # No DNS presence at all (no A/AAAA/MX/NS) and no registration record = the domain does not exist /
-    # is unregistered. Missing SPF/DMARC is meaningless for a domain that isn't even in DNS, so this gets
-    # its own honest state rather than being scored like a real-but-weakly-protected domain.
+    # no DNS records and no registration = unregistered / doesn't exist
     result["unresolved"] = (not (res["a"] or res["aaaa"] or res["mx"] or res["ns"])) and reg_date is None
 
-    # For a consumer mail provider (gmail.com, outlook.com, ...) the domain-level intel describes the
-    # PROVIDER, not the individual mailbox — so a clean/imperfect domain neither clears nor condemns the
-    # specific sender. Flag this so the UI + scoring don't misread the provider as the sender.
+    # freemail provider: domain intel describes the provider, not the mailbox
     result["is_provider"] = bool(is_email and result["freemail"])
     result["provider_note"] = (
         f"{reg_dom} is a major consumer mail provider, so the domain data below describes the provider's "
@@ -2096,8 +2070,7 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         f"Reputation checks (breach & infostealer exposure), which look up the exact address."
     ) if result["is_provider"] else None
 
-    # For a big user-content / CDN platform (github.com, amazonaws.com, ...), threat feeds list malware
-    # HOSTED on it by third parties — that reflects abuse of the platform, not that the platform is bad.
+    # hosting/CDN platform: feed hits reflect third-party abuse, not the platform itself
     result["is_platform"] = bool(parsed["kind"] in ("domain", "url") and reg_dom in HOSTING_PLATFORMS)
     result["platform_note"] = (
         f"{reg_dom} is a major hosting / content platform. Threat feeds (URLhaus, ThreatFox) list malware "

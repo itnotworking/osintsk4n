@@ -62,7 +62,7 @@ function startLoader(target) {
     '<span class="lstep" id="loaderStep"><b>' + esc(target) + '</b> — ' + LOADER_STEPS[0] + '…</span>' +
     '<span class="lpct" id="loaderPct">0%</span></div></div>';
   loaderTimer = setInterval(function () {
-    // Ease toward ~92% (we can't know real progress); completion snaps to 100%.
+    // ease toward ~92%; snaps to 100% on finish
     pct += Math.max(0.6, (92 - pct) * 0.09);
     if (pct > 92) pct = 92;
     const idx = Math.min(LOADER_STEPS.length - 1, Math.floor(pct / (92 / LOADER_STEPS.length)));
@@ -89,7 +89,7 @@ function setRunning(on) {
   btn.classList.toggle("stop", on);
 }
 
-// Button click: stop if running, else start. Enter key (form submit) always (re)starts.
+// stop if running, else start
 function toggleSearch() { if (isRunning) cancelAnalyze(); else analyze(); }
 
 function cancelAnalyze() {
@@ -102,7 +102,7 @@ function cancelAnalyze() {
 async function analyze() {
   const target = $("target").value.trim();
   if (!target) return;
-  if (currentController) currentController.abort();   // supersede any in-flight search
+  if (currentController) currentController.abort();   // supersede in-flight search
   const controller = new AbortController();
   currentController = controller;
   let timedOut = false;
@@ -125,7 +125,6 @@ async function analyze() {
     clearTimeout(timeoutId);
     if (controller.signal.aborted) return;            // cancelled or superseded
     if (!res.ok) {
-      // The server answered, but with an error status — explain what happened.
       let msg;
       if (res.status === 429) msg = "Too many searches in a short time. Wait a few seconds and try again.";
       else if (res.status === 400) {
@@ -160,7 +159,7 @@ async function analyze() {
   } catch (e) {
     clearTimeout(timeoutId);
     if (e.name === "AbortError") {
-      // Distinguish our own timeout from a user cancel / superseding search.
+      // our timeout vs a user cancel
       if (timedOut) fail("The analysis timed out after 55 seconds — some intel sources were slow to respond (common for domains with no DNS records). Please try again.");
       return;
     }
@@ -176,7 +175,7 @@ function render(d) {
   saveRecent(d);
 }
 
-// Pin the ticket box to its tallest format so tab switching never reflows the page.
+// pin to tallest format so tab switching doesn't reflow
 function lockTicketHeight() {
   const t = $("ticket");
   if (!t) return;
@@ -186,14 +185,13 @@ function lockTicketHeight() {
     t.innerHTML = ticketBody(ticketFmts[f] || "");
     if (t.offsetHeight > max) max = t.offsetHeight;
   });
-  t.innerHTML = ticketBody(ticketFmts.security);   // restore the default (active) report, styled
+  t.innerHTML = ticketBody(ticketFmts.security);   // restore default report
   t.style.minHeight = max + "px";
 }
 
 function verdictClass(v) {
   return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious","No DNS Record":"neutral"})[v] || "low";
 }
-// Ring colour escalates with the actual score — more severe the higher it goes.
 function ringColor(score) {
   if (score >= 80) return "#ff2d2d";   // severe red
   if (score >= 60) return "#f85149";   // red
@@ -202,7 +200,7 @@ function ringColor(score) {
   return "#3fb950";                     // green
 }
 
-// Plain-English definition for each risk-flag category (native hover tooltip).
+// tooltip text per risk-flag category
 const FLAG_TIPS = {
   "Compromised": "This exact address appears in infostealer-malware logs — its saved credentials were stolen, so the account may be hijacked and used to send malicious mail.",
   "Spoofable": "Weak email authentication (SPF/DKIM/DMARC) lets attackers forge mail from this domain — the basis of Business Email Compromise (BEC).",
@@ -215,7 +213,7 @@ const FLAG_TIPS = {
 };
 function verdictBanner(d) {
   const cls = verdictClass(d.verdict);
-  const unresolved = !!d.unresolved;               // domain isn't in DNS at all → no risk score applies
+  const unresolved = !!d.unresolved;               // no DNS → no risk score
   const ring = unresolved ? "#8b8b96" : ringColor(d.score);
   const ringNum = unresolved ? "—" : d.score;
   const pct = unresolved ? 0 : d.score;
@@ -241,8 +239,7 @@ function verdictBanner(d) {
       d.reasons.map(r => "<li>" + esc(r) + "</li>").join("") + '</ul></div>' : '');
 }
 
-// One/two-sentence plain-English verdict explanation.
-// Synthesized IP summary — a 5-second "what this is + why it's flagged + what to do", front-loaded.
+// IP summary: what it is, why flagged, what to do
 function ipBrief(d) {
   const i = d.info || {}, ab = d.abuse || {}, vt = d.vt || {}, otx = d.otx || {},
         gn = d.greynoise || {}, sh = d.shodan || {}, rip = d.rdap_ip || {};
@@ -252,13 +249,13 @@ function ipBrief(d) {
   const hosting = i.hosting || /data ?cent|hosting|server|transit|colo/.test(usage);
   const anon = i.proxy || ab.isTor || /proxy|vpn|tor/.test(usage);
 
-  // 1) What it is.
+  // what it is
   let s1 = "This is " + (hosting ? "a data-center / hosting IP" : "an IP") + (owner ? " operated by " + owner : "");
   if (ab.isTor) s1 += ", running as a Tor exit node";
   else if (anon) s1 += ", flagged as proxy / VPN / Tor infrastructure";
   s1 += (i.city && (i.countryCode || i.country)) ? " (" + i.city + ", " + (i.countryCode || i.country) + ")." : ".";
 
-  // 2) Why it's flagged — strongest signals first, capped at 3 for a fast read.
+  // why it's flagged — strongest first, capped at 3
   const why = [];
   if (d.threatfox && d.threatfox.found) why.push("it matches a known malware / C2 indicator in ThreatFox");
   if (d.urlhaus && d.urlhaus.found) why.push("it has hosted malware (URLhaus, " + ((d.urlhaus.url_count || 0)) + " URLs)");
@@ -288,7 +285,7 @@ function ipBrief(d) {
     s2 = w.join("; ") + ".";
   }
 
-  // 3) What to do — posture keyed to the verdict.
+  // what to do, keyed to verdict
   const posture = ({
     "Likely Malicious": "Treat it as hostile — consider blocking and hunting for connections to it.",
     "Suspicious": "Treat traffic to or from it as untrusted and corroborate against your own logs before acting.",
@@ -324,7 +321,7 @@ function pill(label, on) {
   return '<span class="pill ' + (on ? 'on' : 'off') + '">' + esc(label) + (on ? ' ✓' : ' ✗') + '</span>';
 }
 
-// Is a given API key configured on the server? (so we don't say "set KEY" when it IS set)
+// is this API key configured server-side?
 function keyOn(k) { return !!(current && current.keys && current.keys[k]); }
 function muted(msg) { return '<pre class="muted">' + esc(msg) + '</pre>'; }
 
@@ -334,22 +331,22 @@ function cards(d) {
   if (d.kind === "hash") return hashCards(d);
   const out = [];
 
-  // Non-existent domain: everything below is empty. Explain it up front so the blank cards make sense.
+  // non-existent domain — the cards below are empty, so explain up front
   if (d.unresolved)
     out.push(card("About this domain", '<pre class="muted" style="white-space:pre-wrap;margin:0">' + esc(d.defanged + " has no DNS records — no A, MX, or NS entries and no registration. It does not resolve and appears to be unregistered or inactive, so the details below are mostly empty. This is not evidence of malice — the name simply is not live.") + '</pre>'));
 
-  // Hosting-platform context: threat-feed hits mean malware was hosted here, not that the platform is bad.
+  // hosting-platform context: feed hits mean malware hosted here, not that the platform is bad
   if (!d.unresolved && d.is_platform && d.platform_note)
     out.push(card("About this domain", '<pre class="muted" style="white-space:pre-wrap;margin:0">' + esc(d.platform_note) + '</pre>'));
 
-  // Consumer-provider context: domain intel describes the provider, not the mailbox. Say so up front.
+  // consumer-provider context: domain intel is about the provider, not the mailbox
   const provider = !!d.is_provider;
   if (!d.unresolved && provider && d.provider_note)
     out.push(card("About this address", '<pre class="muted" style="white-space:pre-wrap;margin:0">' + esc(d.provider_note) + '</pre>'));
 
-  // Email authentication posture — the BEC card
+  // email auth posture (BEC card)
   const dmarc = d.dmarc_parsed, spf = d.spf_parsed;
-  // For a big provider (or a non-existent domain) missing SPF/DMARC isn't a spoofing risk about a sender.
+  // for a big provider / dead domain, missing SPF/DMARC isn't a sender spoofing risk
   const noAuthRisk = provider || d.unresolved;
   const dmarcBad = !noAuthRisk && (!dmarc || (dmarc.policy || "none").toLowerCase() === "none");
   const spfBad = !noAuthRisk;
@@ -396,9 +393,7 @@ function cards(d) {
   // AbuseIPDB
   out.push(card("AbuseIPDB (IP)", abuseBlock(d.abuse)));
 
-  // Threat intel — actor/campaign correlation + known-bad feeds.
-  // OTX counts every pulse that MENTIONS the domain; for a big provider (gmail.com) or hosting platform
-  // (github.com) that's a huge, meaningless number, so hide it there. The feeds below stay informative.
+  // OTX counts every pulse mentioning the domain — meaningless for providers/platforms, so hide it there
   if (!provider && !d.is_platform) out.push(card("Threat Intel (OTX)", otxBlock(d.otx)));
   out.push(card("Threat Feeds", threatFeedsBlock(d)));
   out.push(card("IP Reputation", ipRepBlock(d)));
@@ -417,7 +412,7 @@ function cards(d) {
   if (d.crtsh && d.crtsh.subdomains && d.crtsh.subdomains.length)
     out.push(card("Subdomains (crt.sh)", crtBlock(d.crtsh)));
 
-  // urlscan renders the domain as a website — irrelevant for an email search, so skip it there.
+  // skip urlscan for email searches
   return '<div class="grid">' + out.join("") + '</div>' +
     (d.kind === "email" ? "" : urlscanSection(d)) + buildTicket(d);
 }
@@ -433,7 +428,7 @@ function hashCards(d) {
   return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
 }
 
-// Hybrid Analysis + Hatching Triage sandbox verdicts
+// Hybrid Analysis + Triage sandbox verdicts
 function sandboxBlock(d) {
   const hy = d.hybrid, tr = d.triage;
   if (!hy && !tr) return muted((keyOn('hybrid') || keyOn('triage')) ? 'No sandbox data.' : 'Set HYBRID_API_KEY / TRIAGE_API_KEY for sandbox analysis.');
@@ -640,7 +635,7 @@ function passiveDnsBlock(p) {
 function ipThreatBlock(d) {
   const otx = d.otx, tf = d.threatfox, uh = d.urlhaus;
   let html = "";
-  // OTX pulses (null = source didn't respond; distinct from 0 reports)
+  // null = source didn't respond (distinct from 0 reports)
   if (!otx) html += kvrow("OTX", "unavailable", "");
   else if (otx.pulse_count > 0) {
     html += kvrow("OTX reports", otx.pulse_count, "bad");
@@ -648,7 +643,6 @@ function ipThreatBlock(d) {
     if (otx.adversaries && otx.adversaries.length) html += kvrow("Actors", otx.adversaries.join(", "), "bad");
     if (otx.tags && otx.tags.length) html += kvrow("Tags", otx.tags.join(", "));
   } else html += kvrow("OTX reports", "0 (checked, none)", "good");
-  // ThreatFox / URLhaus track known-malware infra specifically; 'no match' is a real clean result.
   if (!tf) html += kvrow("ThreatFox", "unavailable", "");
   else if (tf.found) html += kvrow("ThreatFox", "KNOWN IOC" + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), "bad");
   else html += kvrow("ThreatFox", "no known-malware match", "good");
@@ -707,9 +701,8 @@ function otxBlock(o) {
 
 function threatFeedsBlock(d) {
   const gsb = d.gsb, tf = d.threatfox, uh = d.urlhaus, plat = !!d.is_platform;
-  // On a hosting platform, feed matches mean third parties hosted malware here — not that the platform
-  // itself is bad. Render those as amber "hosted here" with a clarifying tip, not red "MALWARE HOST".
-  const platTip = "Third parties have hosted malware on this platform. This is abuse of the platform, not the platform being malicious — assess the specific URL/path, not the bare domain.";
+  // on a platform, feed hits are abuse-of-platform → amber "hosted here", not red
+  const platTip ="Third parties have hosted malware on this platform. This is abuse of the platform, not the platform being malicious — assess the specific URL/path, not the bare domain.";
   let html = "";
   // Google Safe Browsing
   if (!gsb) html += kvrow("Safe Browsing", keyOn('gsb') ? "unavailable" : "set GSB_API_KEY", "");
@@ -751,7 +744,7 @@ function emailRepBlock(d) {
   const dis = d.disify, iq = d.ipqs, e = d.emailrep, hr = d.hudsonrock, xon = d.xon;
   if (!dis && !iq && !e && !hr && !xon) return '<pre class="muted">No email reputation data available.</pre>';
   let html = "";
-  // --- Address reputation (free, no key): infostealer + breach exposure ---
+  // --- address reputation: infostealer + breach exposure ---
   if (hr) {
     if (hr.compromised) {
       html += kvrow("Infostealer exposure", "COMPROMISED — in stealer logs", "bad",
@@ -773,7 +766,7 @@ function emailRepBlock(d) {
         "This address wasn't found in XposedOrNot's breach database — either it's clean, or it's a new / unused address.");
     }
   }
-  // --- Validation (Disify) — format & deliverability, NOT mailbox existence ---
+  // --- validation (Disify): format & deliverability, not mailbox existence ---
   if (dis) {
     if (hr || xon) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">Validation (Disify)</div>';
     const sig = dis.signals || [];
@@ -799,7 +792,7 @@ function emailRepBlock(d) {
       (iq.spam_trap_score && iq.spam_trap_score !== "none" ? kvrow("Spam trap", iq.spam_trap_score, "warn") : "") +
       (iq.first_seen ? kvrow("First seen", iq.first_seen) : "");
   }
-  // EmailRep (fallback / supplementary, if its key is set and returns)
+  // EmailRep (supplementary)
   if (e) {
     if (iq) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">EmailRep.io</div>';
     const rep = (e.reputation || "none");
@@ -820,7 +813,7 @@ function urlscanSection(d) {
     '<div id="urlscanBody">' + urlscanBlock(d.urlscan) + '</div></div>';
 }
 
-// Prominent warning banner for an off-domain (likely malicious) redirect.
+// warning banner for an off-domain redirect
 function redirectAlert(toReg) {
   return '<div class="redirect-alert fade-in"><div class="ra-icon">⚠</div><div class="ra-body">' +
     '<div class="ra-title">Likely malicious redirect</div>' +
@@ -830,15 +823,14 @@ function redirectAlert(toReg) {
     '</div></div>';
 }
 
-// Two-column layout: details on the left, larger screenshot on the right.
+// two-column: info left, screenshot right
 function usGrid(info, shotHtml, danger) {
   if (!shotHtml) return info;
   return '<div class="us-grid"><div class="us-info">' + info + '</div>' +
          '<div class="us-shot' + (danger ? ' danger' : '') + '">' + shotHtml + '</div></div>';
 }
 
-// Render from the /analyze urlscan payload (has results[]) OR a live-scan result (single).
-// If the newest urlscan is >30 days old, nudge the analyst to re-scan (results may be stale).
+// nudge a re-scan if the newest urlscan is >30 days old
 function staleScanNote(t) {
   if (!t) return "";
   const d = new Date(t);
@@ -868,7 +860,7 @@ function urlscanBlock(u) {
   return (danger ? redirectAlert(u.redirect.to_reg) : "") + usGrid(info, shotHtml, danger);
 }
 
-// Shared verdict/redirect rows (used by both stored + live results).
+// shared verdict/redirect rows (stored + live)
 function urlscanVerdictRows(u) {
   let html = "";
   const v = u.verdict;
@@ -896,13 +888,12 @@ async function runLiveScan() {
   if (!current) return;
   const body = $("urlscanBody");
   const target = current.url || current.domain;
-  // Same animated bar + percentage as the main analyze loader (fill width is driven by JS).
-  body.innerHTML = '<div class="loader fade-in" style="margin:6px 0"><div class="loader-bar"><i id="liveFill"></i></div>' +
+  body.innerHTML ='<div class="loader fade-in" style="margin:6px 0"><div class="loader-bar"><i id="liveFill"></i></div>' +
     '<div class="loader-step"><span class="lstep" id="liveStep">Submitting <b>' + esc(target) + '</b> to urlscan…</span>' +
     '<span class="lpct" id="livePct">0%</span></div></div>';
   let pct = 0;
   const timer = setInterval(function () {
-    // Ease toward ~92% (real progress is unknown); urlscan is slower than analyze, so ease gently.
+    // ease toward ~92%, gently (urlscan is slow)
     pct += Math.max(0.4, (92 - pct) * 0.045);
     if (pct > 92) pct = 92;
     const fill = $("liveFill"), p = $("livePct");
@@ -920,7 +911,7 @@ async function runLiveScan() {
     const sub = await (await fetch("/urlscan/submit", { method: "POST", body: f })).json();
     if (!sub.uuid) { clearInterval(timer); body.innerHTML = '<div class="v bad">' + esc(sub.error || "Submit failed") + '</div>' + liveBtn('▶ Retry'); return; }
     const step = $("liveStep");
-    // Poll for the result (scans take ~10-30s).
+    // poll for the result (~10-30s)
     for (let i = 0; i < 16; i++) {
       await new Promise(r => setTimeout(r, 3000));
       if (step) step.innerHTML = 'Scanning <b>' + esc(target) + '</b>… (' + ((i + 1) * 3) + 's)';
@@ -945,7 +936,6 @@ function renderLiveResult(res) {
   const danger = !!(res.redirect && res.redirect.offsite);
   const shotHtml = res.screenshot ? shot(res.screenshot, res.result, res.final_url) : "";
   let html = usGrid(info, shotHtml, danger);
-  // If the live scan revealed an off-domain redirect, call it out loudly.
   if (danger) html = redirectAlert(res.redirect.to_reg) + html;
   body.innerHTML = html;
 }
@@ -979,14 +969,14 @@ function buildTicket(d) {
     '<pre id="ticket" class="ticket-body">' + ticketBody(ticketFmts.security) + '</pre></div>';
 }
 
-// The first line of each report is its title (e.g. "SECURITY TEAM — TRIAGE REPORT").
+// first line of the report is its title
 function splitReport(text) {
   const lines = (text || "").split("\n");
   const title = (lines.shift() || "").trim();
   while (lines.length && lines[0].trim() === "") lines.shift();
   return { title: title, body: lines.join("\n") };
 }
-// Render inside the report box with the title line highlighted (kept in the box).
+// render with the title line highlighted
 function ticketBody(text) {
   const r = splitReport(text);
   return '<span class="rt-title">' + esc(r.title) + '</span>\n\n' + esc(r.body);
@@ -1081,7 +1071,7 @@ function fmtSecurityHash(d) {
   return L.join("\n");
 }
 
-// Security Team — full technical report for analysts/SOC.
+// Security Team — full technical report
 function fmtSecurity(d) {
   if (d.kind === "hash") return fmtSecurityHash(d);
   if (d.kind === "cidr") return fmtSecurityCIDR(d);
@@ -1190,14 +1180,13 @@ function stakeholderPoints(d) {
     return p;
   }
   const pts = [];
-  // Address-level compromise is the strongest email signal — surface it first (applies to any provider).
+  // address-level compromise is the strongest email signal — surface first
   if (d.hudsonrock && d.hudsonrock.compromised)
     pts.push("This exact address appears in infostealer-malware logs" + (d.hudsonrock.last_date ? " (most recently " + d.hudsonrock.last_date + ")" : "") + " — its saved credentials were stolen, so the account may be compromised and used for account-takeover or phishing.");
-  // Hosting platform: feed hits mean third parties hosted malware here, not that the platform is bad.
+  // platform: feed hits are third-party abuse, not the platform being bad
   if (d.is_platform && ((d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found)))
     pts.push("This is a major hosting/content platform" + (d.urlhaus && d.urlhaus.found ? " (" + (d.urlhaus.url_count || 0) + " malware URLs in URLhaus)" : "") + ". Third parties abuse it to host malware, which is why it appears in threat feeds — this does not mean the platform itself is malicious. Judge the specific URL or path, not the bare domain.");
-  // Known-bad / actor correlation next — strongest domain signals. Skipped for consumer providers (whose
-  // domains are 'mentioned' in threat feeds as artifacts) and for hosting platforms (abused, not bad).
+  // known-bad / actor correlation — skipped for providers and platforms
   if (!d.is_provider && !d.is_platform && ((d.gsb && d.gsb.flagged) || (d.threatfox && d.threatfox.found) || (d.urlhaus && d.urlhaus.found)))
     pts.push("It appears in recognized threat databases as known-malicious infrastructure.");
   if (!d.is_provider && !d.is_platform && d.otx && d.otx.pulse_count > 0 && ((d.otx.malware_families || []).length || (d.otx.adversaries || []).length))
@@ -1208,11 +1197,11 @@ function stakeholderPoints(d) {
     pts.push("It uses a disposable/throwaway email provider — unusual for a legitimate business sender.");
   else if (d.disify && d.disify.dns === false)
     pts.push("Its domain has no mail (MX) records, so it cannot actually receive email — a common trait of spoofed or fake senders.");
-  // Breach exposure — context, not proof of malice (surfaced for both provider and business addresses).
+  // breach exposure — context, not proof of malice
   if (d.xon && d.xon.found && d.xon.count >= 1 && !(d.hudsonrock && d.hudsonrock.compromised))
     pts.push("The address has been exposed in " + d.xon.count + " known data breach" + (d.xon.count === 1 ? "" : "es") + " — normal for a real, long-lived address, but it raises the odds of credential-stuffing or targeted phishing.");
   if (d.is_provider) {
-    // Email at a major consumer provider — domain intel is about the provider, not the mailbox.
+    // consumer provider — domain intel is about the provider, not the mailbox
     pts.push("This is a valid address at a major consumer mail provider (" + d.registrable + "). The domain details describe the provider's mail service, not this specific mailbox — the sender itself is judged by the Email Reputation checks (breach / infostealer exposure).");
     if (!(d.hudsonrock && d.hudsonrock.compromised) && !(d.xon && d.xon.found) && !(d.ipqs && (d.ipqs.recent_abuse || (d.ipqs.fraud_score || 0) >= 85)))
       pts.push("The address itself shows no infostealer or breach exposure and no abuse signals.");
@@ -1239,7 +1228,7 @@ function riskRating(d) {
   })[d.verdict] || "UNKNOWN";
 }
 
-// Executive — C-suite risk brief: decision-oriented, minimal jargon.
+// Executive — decision-oriented risk brief
 function fmtExecutive(d) {
   const ip = d.kind === "ip";
   const cidr = d.kind === "cidr";
@@ -1305,7 +1294,7 @@ function fmtExecutive(d) {
   return L.join("\n");
 }
 
-// End User — plain guidance for non-technical staff.
+// End User — plain guidance for non-technical staff
 function fmtEndUser(d) {
   const danger = d.verdict === "Likely Malicious" || d.verdict === "Suspicious";
   const result = ({
@@ -1372,7 +1361,7 @@ function copySummary() {
   });
 }
 
-/* ---------- header clocks: US zones + UTC (DST-aware via Intl) ---------- */
+/* ---------- header clocks: US zones + UTC ---------- */
 const CLOCK_ZONES = [
   ["z-pt", "America/Los_Angeles", "PT"],
   ["z-mt", "America/Denver", "MT"],
@@ -1387,7 +1376,7 @@ function zoneTime(tz) {
     }).format(new Date());
   } catch (e) { return "--:--:--"; }
 }
-// Full timestamp for clipboard: ISO-8601 for UTC, "YYYY-MM-DD HH:MM:SS TZ" otherwise.
+// full timestamp for clipboard (ISO for UTC)
 function zoneStamp(tz, label) {
   if (tz === "UTC") return new Date().toISOString();
   try {
@@ -1440,7 +1429,7 @@ async function loadTicker() {
   try {
     const d = await (await fetch("/feed")).json();
     const items = (d && d.items) || [];
-    if (!items.length) return;          // nothing to show → leave header clean
+    if (!items.length) return;
     const html = items.map(tickerItem).join("");
     const track = $("tickerTrack");
     track.innerHTML = html + html;      // duplicate for a seamless loop
@@ -1448,9 +1437,9 @@ async function loadTicker() {
   } catch (e) { /* feed down → silently leave ticker empty */ }
 }
 loadTicker();
-setInterval(loadTicker, 1800000);        // refresh every 30 min (matches server cache)
+setInterval(loadTicker, 1800000);        // every 30 min
 
-/* ---------- recent searches (browser-local, per analyst) ---------- */
+/* ---------- recent searches (browser-local) ---------- */
 const RECENT_KEY = "sc4n_recent";
 function getRecent() {
   try { return JSON.parse(localStorage.getItem(RECENT_KEY)) || []; } catch (e) { return []; }
