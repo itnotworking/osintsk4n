@@ -1150,8 +1150,13 @@ def ipqs_ip(ip):
     )
     if not data or data.get("success") is False:
         return None
+
+    def _v(x):
+        # premium-only fields come back as "Premium required." on the free tier — drop those
+        return None if isinstance(x, str) and "premium" in x.lower() else x
+
     return {
-        "fraud_score": data.get("fraud_score"),
+        "fraud_score": _v(data.get("fraud_score")),
         "proxy": data.get("proxy"),
         "vpn": data.get("vpn"),
         "tor": data.get("tor"),
@@ -1159,10 +1164,10 @@ def ipqs_ip(ip):
         "active_tor": data.get("active_tor"),
         "recent_abuse": data.get("recent_abuse"),
         "bot_status": data.get("bot_status"),
-        "connection_type": data.get("connection_type"),
-        "abuse_velocity": data.get("abuse_velocity"),
-        "isp": data.get("ISP"),
-        "org": data.get("organization"),
+        "connection_type": _v(data.get("connection_type")),
+        "abuse_velocity": _v(data.get("abuse_velocity")),
+        "isp": _v(data.get("ISP")),
+        "org": _v(data.get("organization")),
         "asn": data.get("ASN"),
         "mobile": data.get("mobile"),
         "is_crawler": data.get("is_crawler"),
