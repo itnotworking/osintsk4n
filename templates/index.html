@@ -27,7 +27,8 @@
 
 <div class="wrap">
   <form class="search" onsubmit="event.preventDefault(); analyze();">
-    <input id="target" placeholder="domain, IP, CIDR, URL, email, or file hash — defanged is fine" autocomplete="off" autofocus>
+    <input id="target" placeholder="domain, IP, CIDR, URL, email, or file hash — defanged is fine" autocomplete="off" autofocus oninput="toggleClear()">
+    <button id="clearBtn" type="button" class="clear" title="Clear" aria-label="Clear search" onclick="clearTarget()" hidden>&times;</button>
     <button id="analyzeBtn" type="button" onclick="toggleSearch()">Analyze</button>
   </form>
   <p class="hint">
@@ -92,6 +93,9 @@ function setRunning(on) {
 }
 
 // stop if running, else start
+function toggleClear() { const b = $("clearBtn"); if (b) b.hidden = !$("target").value; }
+function clearTarget() { const t = $("target"); t.value = ""; toggleClear(); t.focus(); }
+
 function toggleSearch() { if (isRunning) cancelAnalyze(); else analyze(); }
 
 function cancelAnalyze() {
@@ -1515,7 +1519,7 @@ function renderRecent() {
     '<span class="rchips">' + chips + '</span>' +
     '<span class="rclear" onclick="clearRecent()">clear</span>';
 }
-function runRecent(t) { $("target").value = t; analyze(); }
+function runRecent(t) { $("target").value = t; toggleClear(); analyze(); }
 function clearRecent() { try { localStorage.removeItem(RECENT_KEY); } catch (e) {} renderRecent(); }
 renderRecent();
 </script>
