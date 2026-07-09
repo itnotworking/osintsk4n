@@ -137,9 +137,10 @@ header h1.brand { display: flex; align-items: center; flex: 0 0 auto; }
 .search button:hover { color: var(--text); }
 .search button:disabled { color: var(--faint); cursor: not-allowed; }
 .search button.clear {
-  color: var(--faint); padding: 0 4px; font-size: 20px; font-weight: 400; line-height: 1; align-self: center;
+  color: var(--muted); padding: 2px 9px; font-size: 20px; font-weight: 400; line-height: 1;
+  align-self: center; border-radius: 6px; transition: color .15s, background .15s;
 }
-.search button.clear:hover { color: var(--text); }
+.search button.clear:hover { color: var(--text); background: rgba(255,255,255,0.07); }
 .search button.clear[hidden] { display: none; }
 .search button.stop { color: var(--bad); }
 .search button.stop::before { content: "■ "; font-size: 10px; }
