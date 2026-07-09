@@ -1140,6 +1140,35 @@ def ipqs_email(email):
     }
 
 
+def ipqs_ip(ip):
+    """IPQualityScore — IP fraud/proxy reputation (fraud score, VPN/Tor, bot, abuse velocity)."""
+    if not ip or not IPQS_API_KEY:
+        return None
+    data = safe_get(
+        f"https://www.ipqualityscore.com/api/json/ip/{IPQS_API_KEY}/{quote(ip)}",
+        params={"strictness": 1}, timeout=12,
+    )
+    if not data or data.get("success") is False:
+        return None
+    return {
+        "fraud_score": data.get("fraud_score"),
+        "proxy": data.get("proxy"),
+        "vpn": data.get("vpn"),
+        "tor": data.get("tor"),
+        "active_vpn": data.get("active_vpn"),
+        "active_tor": data.get("active_tor"),
+        "recent_abuse": data.get("recent_abuse"),
+        "bot_status": data.get("bot_status"),
+        "connection_type": data.get("connection_type"),
+        "abuse_velocity": data.get("abuse_velocity"),
+        "isp": data.get("ISP"),
+        "org": data.get("organization"),
+        "asn": data.get("ASN"),
+        "mobile": data.get("mobile"),
+        "is_crawler": data.get("is_crawler"),
+    }
+
+
 def disify_email(email):
     """Disify (free, no key, no signup) — email validity, disposable, MX/DNS, freemail, role."""
     if not email:
@@ -1550,6 +1579,19 @@ def score_ip(result):
     info = result.get("info")
     if info and info.get("status") == "success" and info.get("proxy"):
         pts += 8; reasons.append("Flagged as proxy / VPN / Tor")
+    # IPQS: score the actual-abuse signals, not raw fraud_score (which is high for any VPN/proxy).
+    iq = result.get("ipqs")
+    if iq:
+        fs = iq.get("fraud_score") or 0
+        if iq.get("recent_abuse"):
+            pts += 25; reasons.append(f"IPQS: recent abuse (fraud score {fs}/100)")
+        elif fs >= 90:
+            pts += 12; reasons.append(f"IPQS: very high fraud score ({fs}/100)")
+        if iq.get("bot_status"):
+            pts += 10; reasons.append("IPQS: automated bot activity")
+        av = (iq.get("abuse_velocity") or "").lower()
+        if av in ("high", "medium") and not iq.get("recent_abuse"):
+            pts += 8; reasons.append(f"IPQS: {av} abuse velocity")
     pts, verdict = _verdict_from(pts)
     return {"score": pts, "verdict": verdict, "reasons": reasons, "flags": []}
 
@@ -1883,6 +1925,7 @@ def analyze(raw_input):
         "otx": bool(OTX_API_KEY), "urlscan": bool(URLSCAN_API_KEY),
         "gsb": bool(GSB_API_KEY), "abusech": bool(ABUSECH_API_KEY),
         "hybrid": bool(HYBRID_API_KEY), "triage": bool(TRIAGE_API_KEY),
+        "ipqs": bool(IPQS_API_KEY),
     }
     return result
 
@@ -1942,6 +1985,7 @@ def _analyze_ip(parsed, ip, raw_input):
         "threatfox": _executor.submit(threatfox_lookup, ip, ip),
         "urlhaus":   _executor.submit(urlhaus_host, ip),
         "ptr":       _executor.submit(reverse_dns, ip),
+        "ipqs":      _executor.submit(ipqs_ip, ip),
     }
     res = {k: f.result() for k, f in futures.items()}
     return {
@@ -1953,7 +1997,7 @@ def _analyze_ip(parsed, ip, raw_input):
         "rdap_ip": res["rdap_ip"], "info": res["info"],
         "shodan": res["shodan"], "greynoise": res["greynoise"],
         "threatfox": res["threatfox"], "urlhaus": res["urlhaus"],
-        "ptr": res["ptr"], "passive_dns": res["passive"],
+        "ptr": res["ptr"], "passive_dns": res["passive"], "ipqs": res["ipqs"],
     }
 
 

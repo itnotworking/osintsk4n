@@ -244,16 +244,17 @@ function verdictBanner(d) {
 // IP summary: what it is, why flagged, what to do
 function ipBrief(d) {
   const i = d.info || {}, ab = d.abuse || {}, vt = d.vt || {}, otx = d.otx || {},
-        gn = d.greynoise || {}, sh = d.shodan || {}, rip = d.rdap_ip || {};
+        gn = d.greynoise || {}, sh = d.shodan || {}, rip = d.rdap_ip || {}, iq = d.ipqs || {};
   const stats = vt.last_analysis_stats || {};
-  const owner = i.isp || i.org || vt.as_owner || ab.isp || rip.name || null;
+  const owner = i.isp || i.org || vt.as_owner || ab.isp || iq.isp || rip.name || null;
   const usage = (ab.usageType || "").toLowerCase();
-  const hosting = i.hosting || /data ?cent|hosting|server|transit|colo/.test(usage);
-  const anon = i.proxy || ab.isTor || /proxy|vpn|tor/.test(usage);
+  const hosting = i.hosting || /data ?cent|hosting|server|transit|colo/.test(usage) || /data ?center/i.test(iq.connection_type || "");
+  const anon = i.proxy || ab.isTor || iq.proxy || iq.vpn || iq.tor || /proxy|vpn|tor/.test(usage);
 
   // what it is
   let s1 = "This is " + (hosting ? "a data-center / hosting IP" : "an IP") + (owner ? " operated by " + owner : "");
-  if (ab.isTor) s1 += ", running as a Tor exit node";
+  if (ab.isTor || iq.active_tor) s1 += ", running as a Tor exit node";
+  else if (iq.active_vpn) s1 += ", operating as an active VPN endpoint";
   else if (anon) s1 += ", flagged as proxy / VPN / Tor infrastructure";
   s1 += (i.city && (i.countryCode || i.country)) ? " (" + i.city + ", " + (i.countryCode || i.country) + ")." : ".";
 
@@ -261,6 +262,7 @@ function ipBrief(d) {
   const why = [];
   if (d.threatfox && d.threatfox.found) why.push("it matches a known malware / C2 indicator in ThreatFox");
   if (d.urlhaus && d.urlhaus.found) why.push("it has hosted malware (URLhaus, " + ((d.urlhaus.url_count || 0)) + " URLs)");
+  if (iq.recent_abuse) why.push("IPQS flags recent fraudulent / abusive activity (fraud score " + (iq.fraud_score || 0) + "/100)");
   const sc = ab.abuseConfidenceScore || 0;
   if (sc >= 25) why.push("AbuseIPDB rates it " + sc + "/100" + (ab.totalReports ? " across " + ab.totalReports + " reports" : "") +
     (ab.top_categories && ab.top_categories.length ? " (" + ab.top_categories.slice(0, 2).join(", ") + ")" : ""));
@@ -269,6 +271,7 @@ function ipBrief(d) {
     const tot = (stats.malicious || 0) + (stats.suspicious || 0) + (stats.harmless || 0) + (stats.undetected || 0);
     why.push(mal + (tot ? " of " + tot : "") + " security vendors flag it malicious");
   }
+  if (iq.bot_status) why.push("IPQS sees automated bot activity from it");
   if (gn.observed && gn.classification === "malicious") why.push("GreyNoise has caught it scanning the internet");
   if ((otx.pulse_count || 0) > 0) {
     const tg = (otx.tags || []).filter(t => /honeypot|honeynet|malware|c2|botnet|scan|brute|phish|exploit|rat|trojan|spam/i.test(t)).slice(0, 2);
@@ -584,6 +587,9 @@ function ipCards(d) {
   // VirusTotal (IP)
   out.push(card("VirusTotal (IP)", vtIpBlock(d.vt)));
 
+  // IPQualityScore — fraud / proxy / VPN / bot
+  out.push(card("Fraud & Proxy (IPQS)", ipqsBlock(d)));
+
   // IP reputation & exposure (GreyNoise + Shodan)
   out.push(card("Reputation & Exposure", ipRepBlock(d)));
 
@@ -740,6 +746,23 @@ function ipRepBlock(d) {
     html += kvrow("Shodan", "no exposure data");
   }
   return html;
+}
+
+function ipqsBlock(d) {
+  const q = d.ipqs;
+  if (!q) return muted(keyOn('ipqs') ? 'No IPQualityScore data for this IP.' : 'Set IPQS_API_KEY to enable IPQualityScore.');
+  const fs = q.fraud_score || 0;
+  const anon = q.active_tor ? "active Tor node" : (q.tor ? "Tor" : (q.active_vpn ? "active VPN" : (q.vpn ? "VPN" : (q.proxy ? "proxy" : "none"))));
+  return kvrow("Fraud score", fs + "/100", fs>=85?"bad":(fs>=75?"warn":"good"),
+      "IPQS fraud/risk score (0–100). 85+ is high risk — but note VPN/proxy IPs score high even when not actively abusive, so weigh it with 'recent abuse'.") +
+    kvrow("Recent abuse", q.recent_abuse ? "YES" : "no", q.recent_abuse ? "bad" : "good",
+      "Whether IPQS has seen this IP in fraudulent or abusive activity recently. This is the sharpest signal here.") +
+    kvrow("Anonymizer", anon, anon === "none" ? "good" : "warn",
+      "Whether IPQS classifies this as proxy / VPN / Tor infrastructure. 'active' means a live tunnel right now.") +
+    kvrow("Bot / automation", q.bot_status ? "YES" : "no", q.bot_status ? "bad" : "") +
+    ((q.abuse_velocity && q.abuse_velocity !== "none") ? kvrow("Abuse velocity", q.abuse_velocity, q.abuse_velocity === "high" ? "bad" : "warn") : "") +
+    (q.connection_type ? kvrow("Connection", q.connection_type) : "") +
+    (q.isp ? kvrow("ISP", q.isp) : "");
 }
 
 function emailRepBlock(d) {
@@ -1124,12 +1147,15 @@ function fmtSecurityIP(d) {
 
 function ipPoints(d) {
   const pts = [];
-  const ab = d.abuse || {}, vt = d.vt || {};
+  const ab = d.abuse || {}, vt = d.vt || {}, iq = d.ipqs || {};
   if ((ab.abuseConfidenceScore || 0) >= 50) pts.push("This IP has a high abuse-confidence score and has been widely reported for malicious activity.");
   if ((vt.last_analysis_stats || {}).malicious > 0) pts.push("Security vendors flag this IP as malicious.");
+  if (iq.recent_abuse) pts.push("IPQualityScore has seen recent fraud/abuse from this IP (fraud score " + (iq.fraud_score || 0) + "/100).");
+  if (iq.bot_status) pts.push("IPQualityScore detects automated bot activity from this IP.");
   if (d.threatfox && d.threatfox.found) pts.push("It matches a known malware/command-and-control indicator.");
   if (d.otx && d.otx.pulse_count > 0 && ((d.otx.malware_families || []).length || (d.otx.adversaries || []).length)) pts.push("It is linked to reported threat activity (associated malware or threat actors).");
-  if (ab.isTor) pts.push("It is a Tor exit node, which is commonly used to anonymize malicious traffic.");
+  if (ab.isTor || iq.active_tor) pts.push("It is a Tor exit node, which is commonly used to anonymize malicious traffic.");
+  else if (iq.active_vpn) pts.push("It is an active VPN endpoint (anonymized traffic).");
   if (ab.top_categories && ab.top_categories.length) pts.push("Recent abuse reports include: " + ab.top_categories.slice(0, 3).join(", ") + ".");
   if (!pts.length) pts.push("No major threat-intelligence sources flag this IP; its infrastructure and reputation look normal.");
   return pts.slice(0, 5);
