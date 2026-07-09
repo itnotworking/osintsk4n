@@ -748,19 +748,39 @@ function ipRepBlock(d) {
   return html;
 }
 
+// Pull the "what kind of activity" detail from the sources that actually provide it (IPQS free tier
+// only says yes/no) — AbuseIPDB categories, OTX malware/actors, ThreatFox family.
+function ipAbuseKinds(d) {
+  const ab = d.abuse || {}, otx = d.otx || {}, tf = d.threatfox || {}, out = [];
+  (ab.top_categories || []).forEach(c => out.push(c));
+  (otx.malware_families || []).forEach(m => out.push(m));
+  (otx.adversaries || []).forEach(a => out.push(a));
+  if (tf.found && tf.malware) (tf.malware || []).forEach(m => out.push(m));
+  return [...new Set(out.filter(Boolean))];
+}
+
 function ipqsBlock(d) {
   const q = d.ipqs;
   if (!q) return muted(keyOn('ipqs') ? 'No IPQualityScore data for this IP.' : 'Set IPQS_API_KEY to enable IPQualityScore.');
   const fs = q.fraud_score || 0;
-  const anon = q.active_tor ? "active Tor node" : (q.tor ? "Tor" : (q.active_vpn ? "active VPN" : (q.vpn ? "VPN" : (q.proxy ? "proxy" : "none"))));
+  // Fuller anonymizer detail — IPQS flags proxy/vpn/tor separately, with an 'active' (live tunnel) state.
+  const kinds = [];
+  if (q.tor || q.active_tor) kinds.push("Tor" + (q.active_tor ? " (active exit)" : ""));
+  if (q.vpn || q.active_vpn) kinds.push("VPN" + (q.active_vpn ? " (active)" : ""));
+  if (q.proxy && !q.vpn && !q.tor) kinds.push("proxy");
+  const anon = kinds.length ? kinds.join(", ") : "none detected";
+  const abuseKinds = ipAbuseKinds(d);
+
   return kvrow("Fraud score", fs + "/100", fs>=85?"bad":(fs>=75?"warn":"good"),
-      "IPQS fraud/risk score (0–100). 85+ is high risk — but note VPN/proxy IPs score high even when not actively abusive, so weigh it with 'recent abuse'.") +
+      "IPQS fraud/risk score (0–100). 85+ is high risk — but VPN/proxy IPs score high even when not actively abusive, so weigh it against 'recent abuse'.") +
     kvrow("Recent abuse", q.recent_abuse ? "YES" : "no", q.recent_abuse ? "bad" : "good",
-      "Whether IPQS has seen this IP in fraudulent or abusive activity recently. This is the sharpest signal here.") +
-    kvrow("Anonymizer", anon, anon === "none" ? "good" : "warn",
-      "Whether IPQS classifies this as proxy / VPN / Tor infrastructure. 'active' means a live tunnel right now.") +
-    kvrow("Bot / automation", q.bot_status ? "YES" : "no", q.bot_status ? "bad" : "") +
-    ((q.abuse_velocity && q.abuse_velocity !== "none") ? kvrow("Abuse velocity", q.abuse_velocity, q.abuse_velocity === "high" ? "bad" : "warn") : "") +
+      "IPQS has seen this IP in fraud/abuse activity recently (via its honeypot & threat network). The free tier reports yes/no only — the activity type is shown in 'Reported for' below, drawn from AbuseIPDB / OTX / ThreatFox.") +
+    (abuseKinds.length ? kvrow("Reported for", abuseKinds.slice(0, 5).join(", "), "bad",
+      "The kind of activity this IP has actually been reported for — AbuseIPDB categories, OTX malware/actors, and ThreatFox family. This is where the 'what' behind the abuse flags comes from.") : "") +
+    kvrow("Anonymizer", anon, (anon === "none detected") ? "good" : "warn",
+      "Which anonymizer types IPQS detects (proxy / VPN / Tor). 'active' means a live tunnel at scan time.") +
+    kvrow("Bot / automation", q.bot_status ? "YES" : "no", q.bot_status ? "bad" : "",
+      "IPQS classifies traffic from this IP as automated / non-human (scanners, credential-stuffing, scrapers, spam bots). The free tier does not name a specific botnet — check 'Reported for' and the Threat Intel card for any named family.") +
     (q.connection_type ? kvrow("Connection", q.connection_type) : "") +
     (q.isp ? kvrow("ISP", q.isp) : "");
 }
