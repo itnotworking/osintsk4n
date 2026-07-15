@@ -1639,8 +1639,10 @@ def score(result):
         elif susp > 2:
             pts += 10; reasons.append(f"VirusTotal: {susp} suspicious")
 
+    # A tenant sits on the platform's shared load-balancer IP, so its IP reputation is other tenants'
+    # abuse, not this site's — same reason we don't credit the platform's domain age to it.
     abuse = result.get("abuse")
-    if abuse and not provider:
+    if abuse and not provider and not tenant:
         sc = abuse.get("abuseConfidenceScore", 0)
         if sc >= 50:
             pts += 30; reasons.append(f"AbuseIPDB confidence {sc}/100")
@@ -1813,7 +1815,7 @@ def score(result):
             reasons.append("EmailRep: address appears in breaches/credential leaks")
 
     info = result.get("info")
-    if info and info.get("status") == "success":
+    if info and info.get("status") == "success" and not tenant:
         if info.get("proxy"):
             pts += 8; reasons.append("IP flagged as proxy/VPN/Tor")
 
@@ -2083,9 +2085,12 @@ def _analyze_domain(parsed, domain, ip, raw_input):
     ) if result["is_platform"] else None
     result["tenant_note"] = (
         f"This is a user-created site on {reg_dom}, a free/shared hosting platform — anyone can create one "
-        f"in minutes, and these are heavily abused for phishing. The registration date, age and registrar "
-        f"below belong to {reg_dom} itself, NOT to this site, so they say nothing about whether this page "
-        f"is trustworthy. Judge it on its own content and behaviour — run a live urlscan below."
+        f"in minutes, and these are heavily abused for phishing.\n\n"
+        f"The registration date, age and registrar below belong to {reg_dom} itself, and the resolved IP is "
+        f"the platform's shared load balancer used by thousands of other sites. None of that is evidence "
+        f"about THIS page either way, so it is reported as context only and does not drive the verdict.\n\n"
+        f"What does count here: VirusTotal / Safe Browsing / ThreatFox / URLhaus on this exact hostname, and "
+        f"what the page actually does — run a live urlscan below."
     ) if result["is_tenant"] else None
     return result
 
