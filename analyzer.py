@@ -1946,6 +1946,11 @@ def _analyze_ip(parsed, ip, raw_input):
 def _analyze_domain(parsed, domain, ip, raw_input):
     is_email = parsed["kind"] == "email"
     reg_dom = parsed["registrable"]
+    # A user-created site on a shared host. Sources that key on the registrable domain would return the
+    # PLATFORM's data (onrender.com), not this site's — so those get pointed at the full hostname instead.
+    on_shared_host = parsed["kind"] in ("domain", "url") and reg_dom in HOSTING_PLATFORMS
+    tenant = on_shared_host and domain != reg_dom
+    reg_or_host = domain if tenant else reg_dom
 
     # Phase 1 — fast DNS presence probe. No records of any kind → bail early
     # with "No DNS Record" instead of running the slow sources.
@@ -1970,6 +1975,7 @@ def _analyze_domain(parsed, domain, ip, raw_input):
             "freemail": reg_dom in FREEMAIL_DOMAINS, "disposable": reg_dom in DISPOSABLE_DOMAINS,
             "is_provider": False, "provider_note": None,
             "is_platform": False, "platform_note": None,
+            "is_tenant": False, "tenant_note": None,
         }
 
     # Phase 2 — full pipeline (reuse the DNS already fetched); skip urlscan for email
@@ -1983,10 +1989,10 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "info":  _executor.submit(ip_info, ip),
         "abuse": _executor.submit(abuseipdb, ip),
         "urlscan": _executor.submit(lambda: None) if is_email else _executor.submit(urlscan_search, domain),
-        "crtsh": _executor.submit(crtsh, parsed["registrable"]),
+        "crtsh": _executor.submit(crtsh, reg_or_host),
         "dkim":  _executor.submit(check_dkim, domain),
-        "otx":   _executor.submit(otx_lookup, parsed["registrable"]),
-        "threatfox": _executor.submit(threatfox_lookup, domain, parsed["registrable"]),
+        "otx":   _executor.submit(otx_lookup, reg_or_host),
+        "threatfox": _executor.submit(threatfox_lookup, domain, reg_or_host),
         "urlhaus": _executor.submit(urlhaus_host, domain),
         "shodan": _executor.submit(shodan_internetdb, ip),
         "greynoise": _executor.submit(greynoise_lookup, ip),
@@ -2068,9 +2074,8 @@ def _analyze_domain(parsed, domain, ip, raw_input):
     # Querying the platform APEX (github.com) is not the same as querying a user-created site ON it
     # (evil.vercel.app). The apex gets the feed-noise guard; a tenant must NOT — a malicious tenant has
     # to stay flaggable, and the platform's age/registrar is not the tenant's.
-    on_platform = parsed["kind"] in ("domain", "url") and reg_dom in HOSTING_PLATFORMS
-    result["is_platform"] = bool(on_platform and domain == reg_dom)
-    result["is_tenant"] = bool(on_platform and domain != reg_dom)
+    result["is_platform"] = bool(on_shared_host and domain == reg_dom)
+    result["is_tenant"] = bool(tenant)
     result["platform_note"] = (
         f"{reg_dom} is a major hosting / content platform. Threat feeds (URLhaus, ThreatFox) list malware "
         f"that third parties have hosted on it — this reflects abuse of the platform, not that {reg_dom} "
