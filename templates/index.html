@@ -1075,6 +1075,125 @@ function recAction(d) {
   })[d.verdict] || "Review manually.";
 }
 
+// Unambiguous UTC — the reviewer reopening this ticket weeks later is in another timezone.
+function stampUTC() {
+  const n = new Date(), p = x => String(x).padStart(2, "0");
+  return n.getUTCFullYear() + "-" + p(n.getUTCMonth() + 1) + "-" + p(n.getUTCDate()) + " " +
+         p(n.getUTCHours()) + ":" + p(n.getUTCMinutes()) + " UTC";
+}
+
+// Evidence trail: every source consulted and what it said. A clean source is recorded explicitly so a
+// reviewer can tell it was checked and came back empty — not silently skipped.
+function evidence(d) {
+  const out = [];
+  const add = (name, status, detail) => out.push({ name: name, status: status, detail: detail || "" });
+  const vtStat = v => {
+    const s = v.last_analysis_stats || {}, tot = Object.values(s).reduce((a, b) => a + b, 0) || 0;
+    return { mal: s.malicious || 0, tot: tot };
+  };
+
+  if (d.kind === "hash") {
+    const v = d.vt_file;
+    if (!v) add("VirusTotal", "na", keyOn('vt') ? "no response" : "no API key");
+    else if (v.found) { const t = vtStat(v); t.mal > 0 ? add("VirusTotal", "hit", t.mal + "/" + t.tot + " engines malicious") : add("VirusTotal", "clean", "0/" + t.tot + " engines"); }
+    else add("VirusTotal", "clean", "sample unknown to VT");
+    const mb = d.mb;
+    if (!mb) add("MalwareBazaar", "na"); else mb.found ? add("MalwareBazaar", "hit", mb.signature || "known sample") : add("MalwareBazaar", "clean");
+    const hy = d.hybrid;
+    if (!hy) add("Hybrid Analysis", "na", keyOn('hybrid') ? "no response" : "no API key");
+    else if (hy.error) add("Hybrid Analysis", "na", hy.error);
+    else if (hy.found) add("Hybrid Analysis", "hit", (hy.verdict || "?") + (hy.threat_score != null ? ", threat " + hy.threat_score + "/100" : "") + (hy.family ? ", " + hy.family : ""));
+    else add("Hybrid Analysis", "clean", hy.note || "not sandboxed");
+    const tr = d.triage;
+    if (!tr) add("Hatching Triage", "na", keyOn('triage') ? "no response" : "no API key");
+    else if (tr.found) add("Hatching Triage", "hit", "score " + tr.score + "/10" + ((tr.family || []).length ? ", " + tr.family.join(", ") : ""));
+    else add("Hatching Triage", "clean", "not sandboxed");
+    const tf = d.threatfox;
+    if (!tf) add("ThreatFox", "na"); else tf.found ? add("ThreatFox", "hit", (tf.malware || []).join(", ")) : add("ThreatFox", "clean");
+    return out;
+  }
+
+  if (d.kind === "cidr") {
+    const dr = d.drop;
+    if (!dr) add("Spamhaus DROP", "na"); else dr.listed ? add("Spamhaus DROP", "hit", dr.sblid || "listed") : add("Spamhaus DROP", "clean", "not listed");
+    const b = d.block;
+    if (!b) add("AbuseIPDB (block)", "na", keyOn('abuseipdb') ? "no data" : "no API key");
+    else if (b.error) add("AbuseIPDB (block)", "na", "paid feature");
+    else (b.reported_count || 0) > 0 ? add("AbuseIPDB (block)", "hit", b.reported_count + " reported addresses") : add("AbuseIPDB (block)", "clean", "no reported addresses");
+    if (d.rdap_ip && (d.rdap_ip.name || d.rdap_ip.org)) add("RDAP", "clean", "allocation confirmed");
+    return out;
+  }
+
+  if (d.kind === "ip") {
+    const vt = d.vt;
+    if (!vt) add("VirusTotal", "na", keyOn('vt') ? "no record" : "no API key");
+    else { const t = vtStat(vt); t.mal > 0 ? add("VirusTotal", "hit", t.mal + "/" + t.tot + " engines malicious") : add("VirusTotal", "clean", "0/" + t.tot + " engines"); }
+    const ab = d.abuse;
+    // reports with 0 confidence still count as a finding — saying "no hits" would contradict the
+    // Reported/Signals lines above and mislead a reviewer.
+    if (!ab) add("AbuseIPDB", "na", keyOn('abuseipdb') ? "no record" : "no API key");
+    else if ((ab.abuseConfidenceScore || 0) > 0 || (ab.totalReports || 0) > 0)
+      add("AbuseIPDB", "hit", (ab.abuseConfidenceScore || 0) + "/100 confidence, " + (ab.totalReports || 0) + " report(s)" + ((ab.top_categories || []).length ? ": " + ab.top_categories.slice(0, 3).join(", ") : ""));
+    else add("AbuseIPDB", "clean", "0/100, no reports");
+    const iq = d.ipqs;
+    if (!iq) add("IPQualityScore", "na", keyOn('ipqs') ? "no response" : "no API key");
+    else if (iq.recent_abuse || iq.bot_status) add("IPQualityScore", "hit", "fraud " + (iq.fraud_score || 0) + "/100" + (iq.recent_abuse ? ", recent abuse" : "") + (iq.bot_status ? ", bot activity" : ""));
+    else add("IPQualityScore", "clean", "fraud " + (iq.fraud_score || 0) + "/100, no recent abuse");
+    const otx = d.otx;
+    if (!otx) add("AlienVault OTX", "na"); else (otx.pulse_count || 0) > 0 ? add("AlienVault OTX", "hit", otx.pulse_count + " pulses") : add("AlienVault OTX", "clean", "0 pulses");
+    const tf = d.threatfox; if (!tf) add("ThreatFox", "na"); else tf.found ? add("ThreatFox", "hit", (tf.malware || []).join(", ")) : add("ThreatFox", "clean", "no match");
+    const uh = d.urlhaus; if (!uh) add("URLhaus", "na"); else uh.found ? add("URLhaus", "hit", (uh.url_count || 0) + " malware URLs") : add("URLhaus", "clean", "no match");
+    const gn = d.greynoise;
+    if (!gn) add("GreyNoise", "na");
+    else (gn.observed && gn.classification === "malicious") ? add("GreyNoise", "hit", "classified malicious") : add("GreyNoise", "clean", gn.observed ? (gn.classification || "observed") : "not observed scanning");
+    const sh = d.shodan;
+    if (!sh) add("Shodan", "na");
+    else { const np = (sh.ports || []).length; add("Shodan", "clean", np + " open port" + (np === 1 ? "" : "s")); }
+    return out;
+  }
+
+  // domain / url / email
+  const vt = d.vt;
+  if (!vt) add("VirusTotal", "na", keyOn('vt') ? "no record" : "no API key");
+  else { const t = vtStat(vt); t.mal > 0 ? add("VirusTotal", "hit", t.mal + "/" + t.tot + " engines malicious") : add("VirusTotal", "clean", "0/" + t.tot + " engines"); }
+  const gsb = d.gsb;
+  if (!gsb) add("Safe Browsing", "na", keyOn('gsb') ? "no response" : "no API key"); else gsb.flagged ? add("Safe Browsing", "hit", (gsb.threats || []).join(", ")) : add("Safe Browsing", "clean", "not flagged");
+  const tf = d.threatfox; if (!tf) add("ThreatFox", "na"); else tf.found ? add("ThreatFox", "hit", (tf.malware || []).join(", ")) : add("ThreatFox", "clean", "no match");
+  const uh = d.urlhaus; if (!uh) add("URLhaus", "na"); else uh.found ? add("URLhaus", "hit", (uh.url_count || 0) + " malware URLs") : add("URLhaus", "clean", "no match");
+  const otx = d.otx; if (!otx) add("AlienVault OTX", "na"); else (otx.pulse_count || 0) > 0 ? add("AlienVault OTX", "hit", otx.pulse_count + " pulses") : add("AlienVault OTX", "clean", "0 pulses");
+  if (d.kind !== "email") {
+    const us = d.urlscan;
+    if (!us) add("urlscan.io", "na", keyOn('urlscan') ? "no prior scans" : "no API key");
+    else if (us.redirect && us.redirect.offsite) add("urlscan.io", "hit", "off-domain redirect to " + us.redirect.to_reg);
+    else if (us.verdict && us.verdict.malicious) add("urlscan.io", "hit", "malicious verdict");
+    else add("urlscan.io", "clean", (us.count || 0) + " prior scans, no detection");
+  }
+  if (d.registered) add("RDAP / WHOIS", "clean", "registered " + d.registered.slice(0, 10));
+  if (d.kind === "email") {
+    const hr = d.hudsonrock;
+    if (!hr) add("Hudson Rock", "na"); else hr.compromised ? add("Hudson Rock", "hit", hr.count + " infostealer infection(s)") : add("Hudson Rock", "clean", "not in stealer logs");
+    const xon = d.xon; if (!xon) add("XposedOrNot", "na"); else xon.found ? add("XposedOrNot", "hit", xon.count + " known breaches") : add("XposedOrNot", "clean", "no known breaches");
+    const iq = d.ipqs;
+    if (!iq) add("IPQualityScore", "na", keyOn('ipqs') ? "no response" : "no API key");
+    else (iq.recent_abuse || (iq.fraud_score || 0) >= 85) ? add("IPQualityScore", "hit", "fraud " + (iq.fraud_score || 0) + "/100" + (iq.recent_abuse ? ", recent abuse" : "")) : add("IPQualityScore", "clean", "fraud " + (iq.fraud_score || 0) + "/100");
+    if (d.disify) add("Disify", "clean", "format / deliverability checked");
+  }
+  return out;
+}
+
+function evidenceLines(d) {
+  const ev = evidence(d);
+  const fmt = e => e.name + (e.detail ? " (" + e.detail + ")" : "");
+  const hits = ev.filter(e => e.status === "hit").map(fmt);
+  const clean = ev.filter(e => e.status === "clean").map(fmt);
+  const na = ev.filter(e => e.status === "na").map(fmt);
+  const L = [];
+  if (hits.length) L.push("Findings:  " + hits.join("  ·  "));
+  if (clean.length) L.push("No hits:   " + clean.join("  ·  "));
+  if (na.length) L.push("No data:   " + na.join("  ·  "));
+  return L;
+}
+
 function authLine(d) {
   return "DMARC " + (d.dmarc_parsed ? "p=" + d.dmarc_parsed.policy : "MISSING") +
     ", SPF " + (d.spf_parsed ? "present" : "MISSING") +
@@ -1088,6 +1207,7 @@ function fmtSecurityCIDR(d) {
   L.push("");
   L.push("IOC:      " + d.defanged + "  (network block)");
   L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  L.push("Analyzed: " + stampUTC());
   if (d.drop && d.drop.listed) L.push("Spamhaus: DROP-LISTED — criminal netblock (" + (d.drop.sblid || "") + ")");
   else if (d.drop) L.push("Spamhaus: not on DROP list");
   if (b.min) L.push("Range:    " + b.min + " – " + b.max + "  ·  " + (b.num_hosts || "?") + " hosts");
@@ -1102,6 +1222,8 @@ function fmtSecurityCIDR(d) {
     worst.forEach(r => L.push("  " + r.ip + "  " + r.score + "/100  (" + (r.reports || 0) + " reports" + (r.cc ? ", " + r.cc : "") + ")"));
   }
   L.push("");
+  evidenceLines(d).forEach(x => L.push(x));
+  L.push("");
   L.push("Recommended action: " + recAction(d));
   return L.join("\n");
 }
@@ -1113,6 +1235,7 @@ function fmtSecurityHash(d) {
   L.push("");
   L.push("IOC:      " + d.hash + "  (" + (d.hash_type || "hash") + ")");
   L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  L.push("Analyzed: " + stampUTC());
   if (v.found) {
     const s = v.last_analysis_stats || {}, total = Object.values(s).reduce((a, b) => a + b, 0) || 0;
     L.push("VirusTotal: " + (s.malicious || 0) + "/" + total + " engines malicious" + (v.family ? "  ·  " + v.family : ""));
@@ -1123,6 +1246,8 @@ function fmtSecurityHash(d) {
   }
   if (mb.found) L.push("MalwareBazaar: KNOWN SAMPLE" + (mb.signature ? "  ·  " + mb.signature : "") + (mb.delivery_method ? "  ·  delivery: " + mb.delivery_method : ""));
   if (d.reasons && d.reasons.length) L.push("Signals:  " + d.reasons.join(" | "));
+  L.push("");
+  evidenceLines(d).forEach(x => L.push(x));
   L.push("");
   L.push("Recommended action: " + recAction(d));
   return L.join("\n");
@@ -1139,6 +1264,7 @@ function fmtSecurity(d) {
   L.push("");
   L.push("IOC:      " + d.defanged + "  (" + d.kind + ")");
   L.push("Verdict:  " + d.verdict + (d.unresolved ? "" : "  (risk " + d.score + "/100)"));
+  L.push("Analyzed: " + stampUTC());
   if (d.unresolved) {
     L.push("DNS:      no records (no A / MX / NS); no registration found");
     L.push("Status:   does not resolve — appears unregistered or inactive");
@@ -1154,6 +1280,8 @@ function fmtSecurity(d) {
   if (d.flags && d.flags.length) L.push("Flags:    " + d.flags.map(f => f.cat + " (" + f.detail + ")").join("; "));
   if (d.reasons && d.reasons.length) L.push("Signals:  " + d.reasons.join(" | "));
   L.push("");
+  evidenceLines(d).forEach(x => L.push(x));
+  L.push("");
   L.push("Recommended action: " + recAction(d));
   return L.join("\n");
 }
@@ -1165,6 +1293,7 @@ function fmtSecurityIP(d) {
   L.push("");
   L.push("IOC:      " + d.defanged + "  (ip)");
   L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  L.push("Analyzed: " + stampUTC());
   L.push("Network:  " + (i.as || (vt.asn ? "AS" + vt.asn : "?")) + "  ·  " + (i.country || "?") + "  ·  " + (i.isp || i.org || vt.as_owner || "?"));
   if (rip.name || rip.cidr) L.push("Alloc:    " + (rip.name || "?") + (rip.cidr ? "  " + rip.cidr : ""));
   if (d.ptr || i.reverse) L.push("rDNS:     " + (d.ptr || i.reverse));
@@ -1172,6 +1301,8 @@ function fmtSecurityIP(d) {
   if (ab.top_categories && ab.top_categories.length) L.push("Reported: " + ab.top_categories.join(", "));
   if (d.otx && d.otx.passive_dns_count) L.push("PassiveDNS: " + d.otx.passive_dns_count + " domains resolved here");
   if (d.reasons && d.reasons.length) L.push("Signals:  " + d.reasons.join(" | "));
+  L.push("");
+  evidenceLines(d).forEach(x => L.push(x));
   L.push("");
   L.push("Recommended action: " + recAction(d));
   return L.join("\n");
@@ -1348,6 +1479,7 @@ function fmtExecutive(d) {
   L.push("");
   L.push("Asset reviewed: " + d.defanged + " (" + d.kind + ")");
   L.push("Risk rating:    " + riskRating(d) + " — " + d.verdict + " (" + d.score + "/100)");
+  L.push("Assessed:       " + stampUTC() + "  (threat intel is time-sensitive — re-check if acting later)");
   L.push("");
   L.push("Bottom line:");
   L.push(bottom);
@@ -1357,7 +1489,9 @@ function fmtExecutive(d) {
   L.push("");
   L.push("Recommended action: " + decision);
   L.push("");
-  L.push("Prepared by SC4N automated triage · " + new Date().toISOString());
+  const srcNames = evidence(d).filter(e => e.status !== "na").map(e => e.name);
+  if (srcNames.length) L.push("Basis: " + srcNames.length + " independent sources checked (" + srcNames.join(", ") + ").");
+  L.push("Prepared by SC4N automated triage · " + stampUTC());
   return L.join("\n");
 }
 
@@ -1404,6 +1538,7 @@ function fmtEndUser(d) {
   L.push("IS THIS SAFE?");
   L.push("");
   L.push("We checked: " + d.defanged);
+  L.push("When:       " + stampUTC());
   L.push("");
   L.push("Result: " + result);
   if (plain) L.push("In plain terms: " + plain);
