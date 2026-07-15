@@ -10,7 +10,6 @@ Pure stdlib + requests so it cold-starts cleanly on Render's free tier.
 import os
 import re
 import json
-import html
 import time
 import socket
 import ipaddress
@@ -1261,86 +1260,6 @@ def emailrep_lookup(email):
         "last_seen": det.get("last_seen"),
         "profiles": det.get("profiles") or [],
     }
-
-
-# --------------------------------------------------------------------------
-# Threat news feed (header ticker) — KEV + security news, no keys
-# --------------------------------------------------------------------------
-
-_feed_cache = {"ts": 0.0, "items": []}
-
-
-def _clean_text(s):
-    if not s:
-        return ""
-    s = s.strip()
-    m = re.match(r"^<!\[CDATA\[(.*?)\]\]>$", s, re.S)
-    if m:
-        s = m.group(1)
-    s = re.sub(r"<[^>]+>", "", s)
-    s = html.unescape(s)
-    return s.strip()
-
-
-def _rss_items(url, limit=4):
-    try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (SC4N threat feed)"}, timeout=10)
-        if r.status_code != 200:
-            return []
-        xml = r.text
-    except Exception:
-        return []
-    out = []
-    for block in re.findall(r"<item[ >].*?</item>", xml, re.S):
-        t = re.search(r"<title>(.*?)</title>", block, re.S)
-        l = re.search(r"<link>(.*?)</link>", block, re.S)
-        p = re.search(r"<pubDate>(.*?)</pubDate>", block, re.S)
-        title = _clean_text(t.group(1)) if t else None
-        link = _clean_text(l.group(1)) if l else None
-        if title and link and link.startswith("http"):
-            out.append({"title": title, "url": link, "date": _clean_text(p.group(1)) if p else ""})
-        if len(out) >= limit:
-            break
-    return out
-
-
-def _kev_items(limit=4):
-    data = safe_get(
-        "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
-        timeout=12,
-    )
-    if not data or not data.get("vulnerabilities"):
-        return []
-    vulns = sorted(data["vulnerabilities"], key=lambda x: x.get("dateAdded", ""), reverse=True)[:limit]
-    out = []
-    for v in vulns:
-        title = f"{v.get('vendorProject','')} {v.get('product','')}: {v.get('vulnerabilityName','')}".strip()
-        out.append({
-            "kind": "kev", "cve": v.get("cveID"), "title": title,
-            "url": f"https://nvd.nist.gov/vuln/detail/{v.get('cveID')}",
-            "date": v.get("dateAdded", ""), "source": "CISA KEV",
-        })
-    return out
-
-
-def threat_news():
-    """Aggregated SOC morning brief: actively-exploited CVEs + breaking news.
-    Cached 30 min so page loads never wait on or hammer the upstreams."""
-    now = time.time()
-    if _feed_cache["items"] and (now - _feed_cache["ts"] < 1800):
-        return _feed_cache["items"]
-    fk = _executor.submit(_kev_items, 4)
-    ft = _executor.submit(_rss_items, "https://feeds.feedburner.com/TheHackersNews", 3)
-    fr = _executor.submit(_rss_items, "https://krebsonsecurity.com/feed/", 2)
-    kev = fk.result()
-    thn = [{**i, "kind": "news", "source": "The Hacker News"} for i in ft.result()]
-    krebs = [{**i, "kind": "news", "source": "Krebs on Security"} for i in fr.result()]
-    # KEV first (most actionable), then news
-    items = kev + thn + krebs
-    if items:
-        _feed_cache["ts"] = now
-        _feed_cache["items"] = items
-    return items
 
 
 def crtsh(domain):
