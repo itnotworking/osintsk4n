@@ -355,6 +355,7 @@ a:hover { color: #b9c0f0; text-decoration: underline; }
 }
 .stale-note b { color: var(--warn); font-weight: 700; }
 .muted { color: var(--muted); }
+.warn-note { color: var(--warn); line-height: 1.6; }
 .hidden { display: none; }
 .fade-in { animation: fadeIn .25s ease forwards; }
 @keyframes fadeIn { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }

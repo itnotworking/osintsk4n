@@ -205,6 +205,7 @@ function ringColor(score) {
 
 // tooltip text per risk-flag category
 const FLAG_TIPS = {
+  "Shared host": "A user-created site on a free/shared hosting platform (Render, Vercel, Netlify, Fly.io…). Anyone can spin one up in minutes and they're heavily abused for phishing — the platform's age and reputation say nothing about this specific site.",
   "Compromised": "This exact address appears in infostealer-malware logs — its saved credentials were stolen, so the account may be hijacked and used to send malicious mail.",
   "Spoofable": "Weak email authentication (SPF/DKIM/DMARC) lets attackers forge mail from this domain — the basis of Business Email Compromise (BEC).",
   "New domain": "Recently registered domains are disproportionately used for scams and phishing.",
@@ -345,6 +346,10 @@ function cards(d) {
   if (!d.unresolved && d.is_platform && d.platform_note)
     out.push(card("About this domain", '<pre class="muted" style="white-space:pre-wrap;margin:0">' + esc(d.platform_note) + '</pre>'));
 
+  // tenant on a shared host: the platform's age/registrar below is NOT this site's
+  if (!d.unresolved && d.is_tenant && d.tenant_note)
+    out.push(card("About this site", '<pre class="warn-note" style="white-space:pre-wrap;margin:0">' + esc(d.tenant_note) + '</pre>'));
+
   // consumer-provider context: domain intel is about the provider, not the mailbox
   const provider = !!d.is_provider;
   if (!d.unresolved && provider && d.provider_note)
@@ -353,7 +358,7 @@ function cards(d) {
   // email auth posture (BEC card)
   const dmarc = d.dmarc_parsed, spf = d.spf_parsed;
   // for a big provider / dead domain, missing SPF/DMARC isn't a sender spoofing risk
-  const noAuthRisk = provider || d.unresolved;
+  const noAuthRisk = provider || d.unresolved || d.is_tenant;
   const dmarcBad = !noAuthRisk && (!dmarc || (dmarc.policy || "none").toLowerCase() === "none");
   const spfBad = !noAuthRisk;
   out.push(card("Email Auth Posture (BEC)",
@@ -1056,6 +1061,12 @@ function recAction(d) {
     "Low–Moderate": "Low confidence of malice; document and monitor for repeat connections.",
     "Likely Legitimate": "No action required; treat as normal infrastructure."
   })[d.verdict] || "Review manually.";
+  if (d.is_tenant) return ({
+    "Likely Malicious": "Block this specific hostname (not the whole platform) at Mimecast/Falcon; search & purge delivered messages; hunt for prior clicks. Report the site to " + d.registrable + " for takedown.",
+    "Suspicious": "Quarantine pending review and block the specific hostname, not the parent platform. Verify out-of-band with the recipient — free-host subdomains are a common phishing pattern.",
+    "Low–Moderate": "Nothing conclusive, but this is an unverifiable free-host site: run a live urlscan and judge the page content before releasing.",
+    "Likely Legitimate": "No adverse intel, but the platform's reputation is not this site's — confirm the page is what the recipient expected before treating it as trusted."
+  })[d.verdict] || "Judge this on page content — run a live urlscan.";
   return ({
     "Likely Malicious": "Block domain/sender at Mimecast and CrowdStrike Falcon; search & purge delivered messages; hunt for prior clicks/interaction.",
     "Suspicious": "Quarantine pending review; verify legitimacy out-of-band with the recipient/sender; monitor for related indicators.",
@@ -1255,13 +1266,20 @@ function stakeholderPoints(d) {
     if (!(d.hudsonrock && d.hudsonrock.compromised) && !(d.xon && d.xon.found) && !(d.ipqs && (d.ipqs.recent_abuse || (d.ipqs.fraud_score || 0) >= 85)))
       pts.push("The address itself shows no infostealer or breach exposure and no abuse signals.");
   } else {
-    if (d.age_days != null) {
+    if (d.is_tenant) {
+      // The platform's registration age is NOT this site's — never let it read as legitimacy.
+      pts.push("This is a user-created site on " + d.registrable + ", a free/shared hosting platform where anyone can publish in minutes. The registration age and registrar shown belong to " + d.registrable + " itself, not to this site, so they are no evidence it is trustworthy — these hosts are heavily abused for phishing.");
+      pts.push("Judge this one on its own content and behaviour: run a live urlscan below and check what the page actually does.");
+    } else if (d.age_days != null) {
       if (d.age_days < 90) pts.push("The domain was registered very recently (" + d.age_days + (d.age_days === 1 ? " day" : " days") + " ago) — a common trait of fraudulent or throwaway sites.");
       else pts.push("The domain has been established for " + Math.floor(d.age_days / 365) + "+ years, consistent with a legitimate organization.");
     }
+    // Mail-auth only matters for a domain that sends mail — a hosting tenant is a website, not a sender.
     const dmarcBad = !d.dmarc_parsed || (d.dmarc_parsed.policy || "none").toLowerCase() === "none";
-    if (dmarcBad || !d.spf_parsed) pts.push("Its email protections are incomplete, so messages claiming to come from it can be more easily spoofed.");
-    else pts.push("Its email protections (SPF/DKIM/DMARC) are properly configured, making impersonation difficult.");
+    if (!d.is_tenant) {
+      if (dmarcBad || !d.spf_parsed) pts.push("Its email protections are incomplete, so messages claiming to come from it can be more easily spoofed.");
+      else pts.push("Its email protections (SPF/DKIM/DMARC) are properly configured, making impersonation difficult.");
+    }
     if (d.urlscan && d.urlscan.redirect && d.urlscan.redirect.offsite) pts.push("When opened, the link sends users to an unrelated website (" + d.urlscan.redirect.to_reg + ") — a hallmark of scams and parked domains.");
   }
   if (!d.is_provider && d.vt && (d.vt.last_analysis_stats || {}).malicious > 0) pts.push("Security vendors have flagged this domain as malicious.");

@@ -77,10 +77,13 @@ HOSTING_PLATFORMS = {
     "pastebin.com", "paste.ee", "gofile.io", "file.io", "anonfiles.com",
     # chat / social CDNs
     "discord.com", "discordapp.com", "discordapp.net", "telegram.org", "t.me", "telegra.ph",
-    # app hosting / site builders / tunnels
-    "herokuapp.com", "netlify.app", "vercel.app", "glitch.me", "repl.co", "replit.dev", "ngrok.io",
-    "ngrok-free.app", "trycloudflare.com", "web.app", "firebaseapp.com", "blogspot.com", "wordpress.com",
-    "weebly.com", "wixsite.com", "google.com", "sharepoint.com", "1drv.ms",
+    # app hosting / site builders / tunnels — anyone can spin up a subdomain here in minutes
+    "herokuapp.com", "netlify.app", "netlify.com", "vercel.app", "glitch.me", "repl.co", "replit.dev",
+    "ngrok.io", "ngrok-free.app", "trycloudflare.com", "web.app", "firebaseapp.com", "blogspot.com",
+    "wordpress.com", "weebly.com", "wixsite.com", "google.com", "sharepoint.com", "1drv.ms",
+    "onrender.com", "fly.dev", "railway.app", "up.railway.app", "surge.sh", "deno.dev", "appspot.com",
+    "pythonanywhere.com", "azurestaticapps.net", "000webhostapp.com", "koyeb.app", "cyclic.app",
+    "vercel.sh", "netlify.live", "github.dev", "gitpod.io", "static.app", "neocities.org",
 }
 
 # Commonly impersonated brands, for look-alike scoring
@@ -1614,6 +1617,8 @@ def score(result):
     # For a freemail provider queried by address, domain-level feeds describe the
     # provider not the sender — let only address-level signals drive the score.
     provider = bool(result.get("is_provider"))
+    # A user-created site on a shared host — the platform's domain data isn't this site's.
+    tenant = bool(result.get("is_tenant"))
 
     # not in DNS → doesn't exist; don't score it like a real domain
     if result.get("unresolved"):
@@ -1653,9 +1658,13 @@ def score(result):
             reasons.append(f"Young domain ({age_days}d old)")
             flags.append({"cat": "New domain", "detail": f"{age_days}d old"})
 
+    # Mail-auth only means something for a domain that actually sends mail. A provider's records say
+    # nothing about one mailbox, and a hosting tenant (x.onrender.com) is a website, not a mail domain —
+    # penalising either for "no DMARC" invents a spoofing risk that doesn't exist.
+    no_mail_auth_risk = provider or tenant
     dmarc = result.get("dmarc_parsed")
-    if provider:
-        pass  # provider SPF/DMARC says nothing about the mailbox
+    if no_mail_auth_risk:
+        pass
     elif dmarc is None:
         pts += 14
         reasons.append("No DMARC record — spoofable")
@@ -1665,7 +1674,7 @@ def score(result):
         reasons.append("DMARC p=none — not enforced")
         flags.append({"cat": "Spoofable", "detail": "DMARC not enforced (p=none)"})
 
-    if result.get("spf_parsed") is None and result.get("kind") != "url" and not provider:
+    if result.get("spf_parsed") is None and result.get("kind") != "url" and not no_mail_auth_risk:
         pts += 6
         reasons.append("No SPF record")
         flags.append({"cat": "Spoofable", "detail": "no SPF record"})
@@ -1686,6 +1695,15 @@ def score(result):
         flags.append({"cat": "Disposable", "detail": "throwaway email domain"})
     elif result.get("freemail") and result.get("kind") == "email":
         pts += 4; reasons.append("Free consumer mail provider")
+
+    # A user-created site on a free/shared host: unverifiable and heavily abused for phishing. Modest on
+    # its own (plenty of legit staging sites live here) but it must never read as vouched-for.
+    if result.get("is_tenant"):
+        host = result.get("registrable")
+        pts += 10
+        reasons.append(f"User-created site on {host} (free/shared hosting) — the platform's age and "
+                       f"reputation are not this site's")
+        flags.append({"cat": "Shared host", "detail": f"{host} subdomain"})
 
     us = result.get("urlscan")
     if us and us.get("redirect", {}).get("offsite"):
@@ -2047,12 +2065,23 @@ def _analyze_domain(parsed, domain, ip, raw_input):
     ) if result["is_provider"] else None
 
     # hosting/CDN platform: feed hits reflect third-party abuse, not the platform itself
-    result["is_platform"] = bool(parsed["kind"] in ("domain", "url") and reg_dom in HOSTING_PLATFORMS)
+    # Querying the platform APEX (github.com) is not the same as querying a user-created site ON it
+    # (evil.vercel.app). The apex gets the feed-noise guard; a tenant must NOT — a malicious tenant has
+    # to stay flaggable, and the platform's age/registrar is not the tenant's.
+    on_platform = parsed["kind"] in ("domain", "url") and reg_dom in HOSTING_PLATFORMS
+    result["is_platform"] = bool(on_platform and domain == reg_dom)
+    result["is_tenant"] = bool(on_platform and domain != reg_dom)
     result["platform_note"] = (
         f"{reg_dom} is a major hosting / content platform. Threat feeds (URLhaus, ThreatFox) list malware "
         f"that third parties have hosted on it — this reflects abuse of the platform, not that {reg_dom} "
         f"itself is malicious. Judge the specific URL or path, not the bare domain."
     ) if result["is_platform"] else None
+    result["tenant_note"] = (
+        f"This is a user-created site on {reg_dom}, a free/shared hosting platform — anyone can create one "
+        f"in minutes, and these are heavily abused for phishing. The registration date, age and registrar "
+        f"below belong to {reg_dom} itself, NOT to this site, so they say nothing about whether this page "
+        f"is trustworthy. Judge it on its own content and behaviour — run a live urlscan below."
+    ) if result["is_tenant"] else None
     return result
 
 
