@@ -219,7 +219,7 @@ function isErr(x) { return !!(x && typeof x === "object" && x.error); }
 // A failed source says only that it's unavailable — the cause (quota, timeout, provider message) is ours to
 // fix, not the analyst's. The reason still goes to source_errors for the ticket audit trail.
 function failNote(x) { return muted("Unavailable for this lookup — no data, so don't read this as clean."); }
-function failRow(label, x) { return kvrow(label, "unavailable", "warn", "No data for this lookup, so it tells us nothing either way — it is NOT a clean result."); }
+function failRow(label, x, src) { return kvrow(label, "unavailable", "warn", "No data for this lookup, so it tells us nothing either way — it is NOT a clean result.", src); }
 function srcErrNames(d) { return (d.source_errors || []).map(e => e.source); }
 // ticket audit trail: say when some sources were reused from the cache rather than fetched now
 function cacheSuffix(d) { return d.cache_age_s > 0 ? "  (some sources cached, up to " + Math.max(1, Math.round(d.cache_age_s / 60)) + " min old)" : ""; }
@@ -457,44 +457,44 @@ function cards(d) {
   ));
 
   // Email reputation (only for email queries)
-  if (d.kind === "email") out.push(card("Email Reputation", emailRepBlock(d)));
+  if (d.kind === "email") out.push(card("Email Reputation", withSource(null, () => emailRepBlock(d))));
 
   // Domain reputation / age
   const ev = d.rdap_events || {};
-  out.push(card("Domain Intelligence",
-    kvrow("Registrable", d.registrable + (d.subdomain ? "  (subdomain queried)" : "")) +
+  out.push(card("Domain Intelligence", withSource("RDAP domain registry", () =>
+    kvrow("Registrable", d.registrable + (d.subdomain ? "  (subdomain queried)" : ""), "", "", null) +
     kvrow("Registered", d.registered ? d.registered.slice(0,10) : (ev.registration || "?")) +
     kvrow("Age", d.age_days != null ? (d.age_days + " days" + (d.age_days < 90 ? " ⚠" : "")) : "?", d.age_days != null && d.age_days < 90 ? "warn" : "") +
     kvrow("Expires", (ev.expiration || "?").slice(0,10)) +
     kvrow("Registrar", d.registrar || "?") +
-    kvrow("TLD risk", d.high_risk_tld ? "HIGH-ABUSE TLD" : "normal", d.high_risk_tld ? "bad" : "good") +
-    (d.lookalike && d.lookalike.exact_brand ? kvrow("Brand match", "exact: " + d.lookalike.exact_brand, "good") : "") +
+    kvrow("TLD risk", d.high_risk_tld ? "HIGH-ABUSE TLD" : "normal", d.high_risk_tld ? "bad" : "good", "", null) +
+    (d.lookalike && d.lookalike.exact_brand ? kvrow("Brand match", "exact: " + d.lookalike.exact_brand, "good", "", null) : "") +
     ((d.lookalike && d.lookalike.flags && d.lookalike.flags.length) ?
-      kvrow("Look-alike", d.lookalike.flags.map(f => f.detail).join(" · "), "bad") : "")
-  ));
+      kvrow("Look-alike", d.lookalike.flags.map(f => f.detail).join(" · "), "bad", "", null) : "")
+  )));
 
   // Infrastructure
   const i = d.info || {};
-  out.push(card("Infrastructure",
-    kvrow("Resolved IP", d.ip || "N/A") +
+  out.push(card("Infrastructure", withSource("ip-api", () =>
+    kvrow("Resolved IP", d.ip || "N/A", "", "", null) +
     kvrow("Country", i.country ? (i.country + " (" + (i.countryCode||"") + ")") : "?") +
     kvrow("Location", (i.regionName||"?") + " / " + (i.city||"?")) +
     kvrow("ISP / Org", i.isp || i.org || "?") +
     kvrow("ASN", i.as || "?") +
     kvrow("rDNS", i.reverse || "—") +
     kvrow("Hosting/Proxy", (i.hosting ? "hosting " : "") + (i.proxy ? "proxy/VPN" : ""), i.proxy ? "warn" : "")
-  ));
+  )));
 
   // VirusTotal
-  out.push(card("Vendor Detections", vtBlock(d.vt)));
+  out.push(card("Vendor Detections", withSource("VirusTotal", () => vtBlock(d.vt))));
 
   // AbuseIPDB
-  out.push(card("Abuse Reports (IP)", abuseBlock(d.abuse)));
+  out.push(card("Abuse Reports (IP)", withSource("AbuseIPDB", () => abuseBlock(d.abuse))));
 
   // OTX counts every pulse mentioning the domain — meaningless for providers/platforms, so hide it there
-  if (!provider && !d.is_platform) out.push(card("Threat Intel", otxBlock(d.otx)));
-  out.push(card("Threat Feeds", threatFeedsBlock(d)));
-  out.push(card("IP Reputation", ipRepBlock(d)));
+  if (!provider && !d.is_platform) out.push(card("Threat Intel", withSource("AlienVault OTX", () => otxBlock(d.otx))));
+  out.push(card("Threat Feeds", withSource(null, () => threatFeedsBlock(d))));
+  out.push(card("IP Reputation", withSource(null, () => ipRepBlock(d))));
 
   // DNS
   out.push(card("DNS Records",
@@ -518,10 +518,10 @@ function cards(d) {
 /* ---------- File-hash layout ---------- */
 function hashCards(d) {
   const out = [];
-  out.push(card("File Analysis", vtFileBlock(d.vt_file, d)));
-  out.push(card("Sandbox Analysis", sandboxBlock(d)));
-  out.push(card("Known Malware", mbBlock(d.mb)));
-  out.push(card("Threat Feeds", hashThreatBlock(d)));
+  out.push(card("File Analysis", withSource("VirusTotal", () => vtFileBlock(d.vt_file, d))));
+  out.push(card("Sandbox Analysis", withSource(null, () => sandboxBlock(d))));
+  out.push(card("Known Malware", withSource("MalwareBazaar", () => mbBlock(d.mb))));
+  out.push(card("Threat Feeds", withSource(null, () => hashThreatBlock(d))));
   out.push(card("Hash", hashIdsBlock(d)));
   return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
 }
@@ -532,12 +532,13 @@ function sandboxBlock(d) {
   if (!hy && !tr) return muted((keyOn('hybrid') || keyOn('triage')) ? 'No sandbox data.' : 'Set HYBRID_API_KEY / TRIAGE_API_KEY for sandbox analysis.');
   let html = "";
   // Hybrid Analysis
+  KV_SRC = "Hybrid Analysis";
   if (hy) {
     if (hy.error) html += failRow("Hybrid Analysis", hy);
     else if (!hy.found) html += kvrow("Hybrid Analysis", hy.note || "not sandboxed", "");
     else {
       const v = (hy.verdict || "").toLowerCase(), ts = hy.threat_score;
-      html += kvrow("Hybrid verdict", (hy.verdict || "?"), (v === "malicious" ? "bad" : (v === "suspicious" ? "warn" : "good")), "Hybrid Analysis (Falcon Sandbox) detonated this file; verdict is its behavioral assessment.") +
+      html += kvrow("Hybrid verdict", (hy.verdict || "?"), (v === "malicious" ? "bad" : (v === "suspicious" ? "warn" : "good")), "The sandbox detonated this file; the verdict is its behavioural assessment.") +
         (ts != null ? kvrow("Threat score", ts + "/100", ts >= 70 ? "bad" : (ts >= 30 ? "warn" : "good")) : "") +
         (hy.family ? kvrow("Family", hy.family, "bad") : "") +
         (hy.av_detect != null ? kvrow("AV detection", hy.av_detect + "%") : "") +
@@ -546,16 +547,16 @@ function sandboxBlock(d) {
     }
   } else if (keyOn('hybrid')) html += kvrow("Hybrid Analysis", "unavailable", "");
   // Hatching Triage
+  KV_SRC = "Hatching Triage";
   if (tr) {
     if (isErr(tr)) html += failRow("Triage", tr);
     else if (tr === true || !tr.found) html += kvrow("Triage", "not sandboxed", "");
     else {
       const sc = tr.score;
       if (hy) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">Hatching Triage</div>';
-      html += (sc != null ? kvrow("Triage score", sc + "/10", sc >= 8 ? "bad" : (sc >= 5 ? "warn" : "good"), "Hatching Triage sandbox score (0-10); 8+ is malicious.") : kvrow("Triage", "analyzed")) +
+      html += (sc != null ? kvrow("Triage score", sc + "/10", sc >= 8 ? "bad" : (sc >= 5 ? "warn" : "good"), "Sandbox score (0–10); 8+ is malicious.") : kvrow("Triage", "analyzed")) +
         (tr.family && tr.family.length ? kvrow("Family", tr.family.join(", "), "bad") : "") +
-        (tr.tags && tr.tags.length ? kvrow("Tags", tr.tags.join(", ")) : "") +
-        (tr.url ? '<div class="scanrow" style="margin-top:6px"><a href="' + esc(safeUrl(tr.url)) + '" target="_blank" rel="noopener">View Triage report ↗</a></div>' : "");
+        (tr.tags && tr.tags.length ? kvrow("Tags", tr.tags.join(", ")) : "");
     }
   } else if (keyOn('triage')) html += kvrow("Triage", "unavailable", "");
   return html;
@@ -574,7 +575,7 @@ function vtFileBlock(v, d) {
     kvrow("File type", v.type || "?") +
     (v.size ? kvrow("Size", v.size.toLocaleString() + " bytes") : "") +
     (v.meaningful_name ? kvrow("Name", v.meaningful_name) : "") +
-    (v.first_seen ? kvrow("First seen", v.first_seen, "", "When this file was first submitted to VirusTotal.") : "") +
+    (v.first_seen ? kvrow("First seen", v.first_seen, "", "When this file was first submitted for scanning.") : "") +
     (v.times_submitted ? kvrow("Times submitted", v.times_submitted) : "") +
     (v.tags && v.tags.length ? kvrow("Tags", v.tags.slice(0, 8).join(", ")) : "");
 }
@@ -596,6 +597,7 @@ function mbBlock(m) {
 function hashThreatBlock(d) {
   const tf = d.threatfox;
   let html = "";
+  KV_SRC = "ThreatFox";
   if (!tf) html += kvrow("ThreatFox", keyOn('abusech') ? "unavailable" : "set ABUSECH_API_KEY", "");
   else if (isErr(tf)) html += failRow("ThreatFox", tf);
   else if (tf.found) html += kvrow("ThreatFox", "KNOWN IOC" + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), "bad");
@@ -621,14 +623,14 @@ function cidrCards(d) {
     kvrow("Range", b.min ? (b.min + " – " + b.max) : "?") +
     kvrow("Hosts", b.num_hosts != null ? b.num_hosts : "?") +
     (b.space_desc ? kvrow("Address space", b.space_desc) : "") +
-    kvrow("Allocation", rip.name ? (rip.name + (rip.cidr ? "  " + rip.cidr : "")) : "?") +
-    (rip.org ? kvrow("Org", rip.org) : "") +
-    kvrow("Country", rip.country || "?") +
-    (rip.abuse_contact ? kvrow("Abuse contact", rip.abuse_contact) : "")
+    kvrow("Allocation", rip.name ? (rip.name + (rip.cidr ? "  " + rip.cidr : "")) : "?", "", "", "RDAP registry") +
+    (rip.org ? kvrow("Org", rip.org, "", "", "RDAP registry") : "") +
+    kvrow("Country", rip.country || "?", "", "", "RDAP registry") +
+    (rip.abuse_contact ? kvrow("Abuse contact", rip.abuse_contact, "", "", "RDAP registry") : "")
   ));
 
-  out.push(card("Block Reputation", cidrRepBlock(d.drop)));
-  out.push(card("Block Abuse", cidrAbuseBlock(b, d.block)));
+  out.push(card("Block Reputation", withSource("Spamhaus", () => cidrRepBlock(d.drop))));
+  out.push(card("Block Abuse", withSource("AbuseIPDB", () => cidrAbuseBlock(b, d.block))));
 
   return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
 }
@@ -664,39 +666,39 @@ function ipCards(d) {
   const i = d.info || {}, rip = d.rdap_ip || {}, ab = d.abuse || {};
 
   // Network / allocation
-  out.push(card("Network",
-    kvrow("IP", d.ip) +
-    kvrow("rDNS (PTR)", d.ptr || i.reverse || "—") +
+  out.push(card("Network", withSource("ip-api", () =>
+    kvrow("IP", d.ip, "", "", null) +
+    kvrow("rDNS (PTR)", d.ptr || i.reverse || "—", "", "", null) +
     kvrow("ASN", i.as || (d.vt && d.vt.asn ? "AS" + d.vt.asn : "?")) +
     kvrow("ISP / Org", i.isp || i.org || (d.vt && d.vt.as_owner) || "?") +
     kvrow("Country", i.country ? (i.country + " (" + (i.countryCode||"") + ")") : (rip.country || "?")) +
     kvrow("Location", (i.regionName || "?") + " / " + (i.city || "?")) +
-    kvrow("Allocation", rip.name ? (rip.name + (rip.cidr ? "  " + rip.cidr : "")) : "?") +
-    (rip.range ? kvrow("Range", rip.range) : "") +
-    (rip.abuse_contact ? kvrow("Abuse contact", rip.abuse_contact) : "") +
+    kvrow("Allocation", rip.name ? (rip.name + (rip.cidr ? "  " + rip.cidr : "")) : "?", "", "", "RDAP registry") +
+    (rip.range ? kvrow("Range", rip.range, "", "", "RDAP registry") : "") +
+    (rip.abuse_contact ? kvrow("Abuse contact", rip.abuse_contact, "", "", "RDAP registry") : "") +
     kvrow("Hosting/Proxy", (i.hosting ? "hosting " : "") + (i.proxy ? "proxy/VPN/Tor" : "") || "—", i.proxy ? "warn" : "")
-  ));
+  )));
 
   // AbuseIPDB (rich)
-  out.push(card("Abuse Reports", abuseDetailBlock(ab)));
+  out.push(card("Abuse Reports", withSource("AbuseIPDB", () => abuseDetailBlock(ab))));
 
   // VirusTotal (IP)
-  out.push(card("Vendor Detections", vtIpBlock(d.vt)));
+  out.push(card("Vendor Detections", withSource("VirusTotal", () => vtIpBlock(d.vt))));
 
   // IPQualityScore — fraud / proxy / VPN / bot
-  out.push(card("Fraud & Proxy", ipqsBlock(d)));
+  out.push(card("Fraud & Proxy", withSource("IPQualityScore", () => ipqsBlock(d))));
 
   // proxycheck.io — anonymizer type, risk, honeypot attack history
-  out.push(card("Proxy & Attacks", proxycheckBlock(d)));
+  out.push(card("Proxy & Attacks", withSource("proxycheck.io", () => proxycheckBlock(d))));
 
   // IP reputation & exposure (public blocklists + Shodan)
-  out.push(card("Reputation & Exposure", ipRepBlock(d)));
+  out.push(card("Reputation & Exposure", withSource(null, () => ipRepBlock(d))));
 
   // Passive DNS (VT resolutions)
-  out.push(card("Passive DNS", passiveDnsBlock(d.passive_dns)));
+  out.push(card("Passive DNS", withSource("VirusTotal", () => passiveDnsBlock(d.passive_dns))));
 
   // Threat intel + feeds
-  out.push(card("Threat Intel & Feeds", ipThreatBlock(d)));
+  out.push(card("Threat Intel & Feeds", withSource(null, () => ipThreatBlock(d))));
 
   return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
 }
@@ -705,7 +707,7 @@ function abuseDetailBlock(a) {
   if (!a) return muted(keyOn('abuseipdb') ? 'No AbuseIPDB record for this IP.' : 'Set ABUSEIPDB_API_KEY to enable AbuseIPDB.');
   if (isErr(a)) return failNote(a);
   const sc = a.abuseConfidenceScore || 0;
-  return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good"), "AbuseIPDB's confidence (0–100) that this IP is malicious, based on community reports. 50+ is high, 100 is certain.") +
+  return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good"), "Confidence (0–100) that this IP is malicious, based on community reports. 50+ is high, 100 is certain.") +
     kvrow("Total reports", (a.totalReports||0) + (a.numDistinctUsers ? "  ·  " + a.numDistinctUsers + " reporters" : ""), "", "How many abuse reports (and distinct reporters) this IP has in the last 90 days.") +
     kvrow("Last reported", a.lastReportedAt || "—") +
     kvrow("Usage type", a.usageType || "?") +
@@ -746,6 +748,7 @@ function ipThreatBlock(d) {
   const otx = d.otx, tf = d.threatfox, uh = d.urlhaus;
   let html = "";
   // null = source didn't respond (distinct from 0 reports)
+  KV_SRC = "AlienVault OTX";
   if (!otx) html += kvrow("OTX", "unavailable", "");
   else if (isErr(otx)) html += failRow("OTX", otx);
   else if (otx.pulse_count > 0) {
@@ -754,10 +757,12 @@ function ipThreatBlock(d) {
     if (otx.adversaries && otx.adversaries.length) html += kvrow("Actors", otx.adversaries.join(", "), "bad");
     if (otx.tags && otx.tags.length) html += kvrow("Tags", otx.tags.join(", "));
   } else html += kvrow("OTX reports", "0 (checked, none)", "good");
+  KV_SRC = "ThreatFox";
   if (!tf) html += kvrow("ThreatFox", "unavailable", "");
   else if (isErr(tf)) html += failRow("ThreatFox", tf);
   else if (tf.found) html += kvrow("ThreatFox", "KNOWN IOC" + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), "bad");
   else html += kvrow("ThreatFox", "no known-malware match", "good");
+  KV_SRC = "URLhaus";
   if (!uh) html += kvrow("URLhaus", "unavailable", "");
   else if (isErr(uh)) html += failRow("URLhaus", uh);
   else if (uh.found) html += kvrow("URLhaus", "HOSTS MALWARE · " + (uh.url_count||0) + " URLs", "bad");
@@ -768,8 +773,59 @@ function ipThreatBlock(d) {
 function card(title, body, cls) {
   return '<div class="card fade-in' + (cls ? ' ' + cls : '') + '"><h3><span class="ttl">' + esc(title) + '</span></h3><div class="kv-wrap">' + body + '</div></div>';
 }
-function kvrow(k, v, cls, tip) {
-  return '<div class="kv' + (tip ? ' has-tip' : '') + '"' + (tip ? ' data-tip="' + esc(tip) + '"' : '') + '>' +
+// Tooltips credit where a row's data came from ("Source: AbuseIPDB") — the service is named, never linked,
+// so nobody is sent off the page. withSource() sets the credit for every row a block builds; a row can pass
+// its own, or null for SC4N's own analysis (DNS, email auth, TLD and look-alike checks).
+let KV_SRC = null;
+function withSource(name, fn) { const prev = KV_SRC; KV_SRC = name; try { return fn(); } finally { KV_SRC = prev; } }
+
+// explanations for rows that don't carry their own
+const ROW_TIPS = {
+  "ThreatFox": "A shared database of malware indicators: command-and-control servers, payload hosts and botnet infrastructure. A match means this exact indicator was reported in a malware campaign.",
+  "URLhaus": "A database of hosts and URLs used to distribute malware. A match means malware has been served from here.",
+  "Safe Browsing": "The phishing / malware / unwanted-software list browsers use to show their red warning pages.",
+  "OTX": "Community threat reports that mention this indicator.",
+  "OTX reports": "Community threat reports that mention this indicator. Named malware or threat actors carry more weight than a bare mention.",
+  "Threat reports": "Community threat reports that mention this indicator. Named malware or threat actors carry more weight than a bare mention.",
+  "Malware": "Malware families named in threat reports about this indicator.",
+  "Actors": "Threat actors / APT groups named in threat reports about this indicator.",
+  "Reports": "Titles of the most recent threat reports.",
+  "Last reported": "When this IP was most recently reported for abuse.",
+  "Usage type": "What the IP is used for (e.g. Data Center / CDN, ISP, hosting).",
+  "Tor": "Whether this IP is a known Tor exit node.",
+  "Whitelisted": "Whether the IP is on an allow-list of known-good infrastructure (major CDNs, search-engine crawlers). Reports against allow-listed IPs are often false positives.",
+  "Reported for": "The categories of abuse this IP has been reported for.",
+  "Domains seen": "Domains that have resolved to this IP (passive DNS). Many unrelated domains usually means shared hosting.",
+  "Spamhaus DROP": "The 'Don't Route Or Peer' list of netblocks controlled by criminals or hijacked. Listed ranges should be blocked outright.",
+  "Reported addresses": "How many addresses in this block have recent abuse reports.",
+  "MalwareBazaar": "A repository of confirmed malware samples. 'Not a known sample' means this hash hasn't been shared there.",
+  "Hybrid Analysis": "A malware sandbox that runs files and records what they do.",
+  "Threat score": "Sandbox threat score (0–100); 70+ is malicious.",
+  "Triage": "A malware sandbox that runs files and scores their behaviour (0–10).",
+  "Scanner verdict": "The page scanner's own verdict. It often misses parked or redirecting pages, so it is separate from SC4N's overall verdict.",
+  "Lands on": "Where the page ended up after any redirects when it was scanned.",
+  "Recent scans": "How many times this site has been scanned. The newest are listed below.",
+  "Impersonates": "Brands the page appears to imitate — phishing kits copy real login pages.",
+  "Fraud score": "Fraud / risk score (0–100); 85+ is high risk.",
+  "Deliverability": "How likely mail sent to this address is to be delivered.",
+  "Recent abuse": "Seen in fraud or abuse activity recently.",
+  "In breaches": "Whether this address appears in known data breaches.",
+  "Disposable": "A throwaway / temporary email service.",
+  "Honeypot": "An address planted to catch spammers and scrapers.",
+  "Spam trap": "Likelihood this is a spam-trap address.",
+  "Stolen logins": "Saved logins stolen from the infected device, split into personal and corporate services.",
+  "Infections": "How many infected devices leaked this address, and when the latest was.",
+  "Age": "How long ago the domain was registered. Under 90 days is a common phishing signal.",
+  "TLD risk": "Whether the top-level domain (.xyz, .top …) is abused far more than average.",
+  "Look-alike": "Resembles a well-known brand's domain — a typosquatting / impersonation signal.",
+  "Brand match": "This is the brand's real domain, not a look-alike.",
+  "Hosting/Proxy": "Whether the IP belongs to a hosting provider or is a known proxy / VPN.",
+};
+
+function kvrow(k, v, cls, tip, src) {
+  const credit = src === undefined ? KV_SRC : src;
+  const text = [tip || ROW_TIPS[k], credit ? "Source: " + credit : ""].filter(Boolean).join("\n\n");
+  return '<div class="kv' + (text ? ' has-tip' : '') + '"' + (text ? ' data-tip="' + esc(text) + '"' : '') + '>' +
     '<div class="k">' + esc(k) + '</div><div class="v ' + (cls||"") + '">' + esc(v) + '</div></div>';
 }
 
@@ -797,8 +853,8 @@ function abuseBlock(a) {
   if (!a) return muted(!(current && current.ip) ? 'Domain did not resolve to an IP — no IP reputation to check.' : (keyOn('abuseipdb') ? 'No AbuseIPDB record for this IP.' : 'Set ABUSEIPDB_API_KEY to enable AbuseIPDB.'));
   if (isErr(a)) return failNote(a);
   const sc = a.abuseConfidenceScore || 0;
-  return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good"), "AbuseIPDB's confidence (0–100) that this IP is malicious, based on community reports. 50+ is high, 100 is certain.") +
-         kvrow("Total reports", a.totalReports||0, "", "How many times this IP was reported to AbuseIPDB in the last 90 days.") +
+  return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good"), "Confidence (0–100) that this IP is malicious, based on community reports. 50+ is high, 100 is certain.") +
+         kvrow("Total reports", a.totalReports||0, "", "How many times this IP was reported for abuse in the last 90 days.") +
          kvrow("Last reported", a.lastReportedAt || "—") +
          kvrow("Country", a.countryCode || "?") +
          kvrow("Usage type", a.usageType || "?", "", "What the IP is used for (e.g. Data Center / CDN, ISP, hosting).") +
@@ -821,16 +877,19 @@ function threatFeedsBlock(d) {
   const platTip ="Third parties have hosted malware on this platform. This is abuse of the platform, not the platform being malicious — assess the specific URL/path, not the bare domain.";
   let html = "";
   // Google Safe Browsing
+  KV_SRC = "Google Safe Browsing";
   if (!gsb) html += kvrow("Safe Browsing", keyOn('gsb') ? "unavailable" : "set GSB_API_KEY", "");
   else if (isErr(gsb)) html += failRow("Safe Browsing", gsb);
   else if (gsb.flagged) html += kvrow("Safe Browsing", (gsb.threats || []).join(", ") || "FLAGGED", "bad");
   else html += kvrow("Safe Browsing", "clean", "good");
   // ThreatFox
+  KV_SRC = "ThreatFox";
   if (!tf) html += kvrow("ThreatFox", keyOn('abusech') ? "unavailable" : "set ABUSECH_API_KEY", "");
   else if (isErr(tf)) html += failRow("ThreatFox", tf);
   else if (tf.found) html += kvrow("ThreatFox", (plat ? "malware hosted here" : "KNOWN IOC") + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), plat ? "warn" : "bad", plat ? platTip : "");
   else html += kvrow("ThreatFox", "no match", "good");
   // URLhaus
+  KV_SRC = "URLhaus";
   if (!uh) html += kvrow("URLhaus", keyOn('abusech') ? "unavailable" : "set ABUSECH_API_KEY", "");
   else if (isErr(uh)) html += failRow("URLhaus", uh);
   else if (uh.found) html += kvrow("URLhaus", (plat ? "malware hosted here · " : "MALWARE HOST · ") + (uh.url_count || 0) + " URLs", plat ? "warn" : "bad", plat ? platTip : "");
@@ -842,6 +901,7 @@ function ipRepBlock(d) {
   if (!d.ip) return '<pre class="muted">No resolved IP</pre>';
   const bl = d.blocklists, s = d.shodan;
   let html = "";
+  KV_SRC = "IPsum (30+ public blocklists)";
   if (isErr(bl)) html += failRow("Public blocklists", bl);
   else if (bl) {
     const n = bl.ipsum_count;
@@ -850,11 +910,12 @@ function ipRepBlock(d) {
       "Merged daily from 30+ public blocklists (scanners, brute-forcers, spam, botnets), counting how many list this IP. 3+ lists is a strong signal; a single listing can be stale." +
       (bl.list_date ? " Lists updated " + bl.list_date + "." : ""));
     html += kvrow("Tor exit", bl.tor_exit == null ? "unknown (list unavailable)" : (bl.tor_exit ? "YES" : "no"), bl.tor_exit ? "warn" : "",
-      "Checked against the published Tor exit-node list, refreshed every 6 hours.");
+      "Checked against the published Tor exit-node list, refreshed every 6 hours.", "Tor Project");
   }
   // no record and a record with zero ports mean the same thing to an analyst — one wording for both
   const noPorts = () => kvrow("Open ports", "none on record", "",
     "This IP hasn't been seen with open services in internet-wide scans. CDN and anycast edge IPs often aren't.");
+  KV_SRC = "Shodan";
   if (isErr(s)) html += failRow("Exposure", s);
   else if (s) {
     html += (s.ports && s.ports.length) ? kvrow("Open ports", s.ports.join(", "), "",
@@ -930,7 +991,7 @@ function ipqsBlock(d) {
     kvrow("Recent abuse", q.recent_abuse ? "YES" : "no", q.recent_abuse ? "bad" : "good",
       "This IP has been seen in fraud / abuse activity recently. This check reports yes/no only — the kind of activity is shown in 'Reported for' below.") +
     (abuseKinds.length ? kvrow("Reported for", abuseKinds.slice(0, 5).join(", "), "bad",
-      "The kind of activity this IP has actually been reported for — AbuseIPDB categories, OTX malware/actors, and ThreatFox family. This is where the 'what' behind the abuse flags comes from.") : "") +
+      "The kind of activity this IP has actually been reported for. This is where the 'what' behind the abuse flags comes from.", "AbuseIPDB, AlienVault OTX, ThreatFox") : "") +
     kvrow("Anonymizer", anon, (anon === "none detected") ? "good" : "warn",
       "Which anonymizer types are detected (proxy / VPN / Tor). 'active' means a live tunnel at scan time.") +
     kvrow("Bot / automation", q.bot_status ? "YES" : "no", q.bot_status ? "bad" : "",
@@ -944,6 +1005,7 @@ function emailRepBlock(d) {
   if (!dis && !iq && !e && !hr && !xon) return '<pre class="muted">No email reputation data available.</pre>';
   let html = "";
   // --- address reputation: infostealer + breach exposure ---
+  KV_SRC = "Hudson Rock";
   if (isErr(hr)) html += failRow("Infostealer exposure", hr);
   else if (hr) {
     if (hr.compromised) {
@@ -953,23 +1015,25 @@ function emailRepBlock(d) {
         ((hr.user_services || hr.corporate_services) ? kvrow("Stolen logins", (hr.user_services||0) + " personal / " + (hr.corporate_services||0) + " corporate", "bad") : "");
     } else {
       html += kvrow("Infostealer exposure", "clean — not in stealer logs", "good",
-        "Checks Hudson Rock's infostealer-malware database for this exact address. 'Clean' means it hasn't appeared in known credential-theft logs.");
+        "Checks an infostealer-malware database for this exact address. 'Clean' means it hasn't appeared in known credential-theft logs.");
     }
   }
+  KV_SRC = "XposedOrNot";
   if (isErr(xon)) html += failRow("Breach exposure", xon);
   else if (xon) {
     if (xon.found) {
       html += kvrow("Breach exposure", xon.count + " known breach" + (xon.count === 1 ? "" : "es"), xon.count >= 8 ? "warn" : "",
-        "Data breaches this address has appeared in (via XposedOrNot). Breach presence is common for real, long-lived addresses — it's exposure, not proof of malice — but heavy exposure raises phishing / credential-stuffing risk.") +
+        "Data breaches this address has appeared in. Breach presence is common for real, long-lived addresses — it's exposure, not proof of malice — but heavy exposure raises phishing / credential-stuffing risk.") +
         ((xon.breaches && xon.breaches.length) ? kvrow("Seen in", xon.breaches.slice(0, 8).join(", ") + (xon.count > 8 ? ", +" + (xon.count - 8) + " more" : "")) : "");
     } else {
       html += kvrow("Breach exposure", "no known breaches", "good",
-        "This address wasn't found in XposedOrNot's breach database — either it's clean, or it's a new / unused address.");
+        "This address wasn't found in known breach databases — either it's clean, or it's a new / unused address.");
     }
   }
   // --- validation (Disify): format & deliverability, not mailbox existence ---
+  KV_SRC = "Disify";
   if (dis) {
-    if (hr || xon) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">Validation (Disify)</div>';
+    if (hr || xon) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">Validation</div>';
     const sig = dis.signals || [];
     html += kvrow("Format", dis.format ? "well-formed" : "invalid", dis.format ? "good" : "bad",
         "Whether the address is syntactically valid (looks like name@domain). Syntax only — it does NOT confirm the mailbox actually exists.") +
@@ -980,10 +1044,11 @@ function emailRepBlock(d) {
       (dis.role ? kvrow("Role account", "yes (e.g. admin@ / info@)", "warn") : "") +
       (sig.length ? kvrow("Signals", sig.join(", "), sig.indexOf("high_entropy") >= 0 ? "warn" : "") : "");
   }
-  // IPQualityScore (optional, if key)
-  if (isErr(iq)) html += failRow("IPQualityScore", iq);
+  // fraud check (optional, if key)
+  KV_SRC = "IPQualityScore";
+  if (isErr(iq)) html += failRow("Fraud check", iq);
   else if (iq) {
-    if (dis) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">IPQualityScore</div>';
+    if (dis) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">Fraud check</div>';
     const fs = iq.fraud_score || 0;
     html += kvrow("Fraud score", fs + "/100", fs >= 85 ? "bad" : (fs >= 60 ? "warn" : "good")) +
       kvrow("Deliverability", iq.deliverability || "?", iq.deliverability === "low" ? "warn" : "") +
@@ -995,8 +1060,9 @@ function emailRepBlock(d) {
       (iq.first_seen ? kvrow("First seen", iq.first_seen) : "");
   }
   // EmailRep (supplementary)
+  KV_SRC = "EmailRep";
   if (e) {
-    if (iq) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">EmailRep.io</div>';
+    if (iq) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">Reputation</div>';
     const rep = (e.reputation || "none");
     html += kvrow("Reputation", rep, rep === "high" ? "good" : (rep === "low" ? "bad" : "warn")) +
       kvrow("Suspicious", e.suspicious ? "YES" : "no", e.suspicious ? "bad" : "good") +
@@ -1012,7 +1078,7 @@ function liveBtn(label) {
 
 function urlscanSection(d) {
   return '<div class="card us-section fade-in"><h3><span class="ttl">Page Scan</span></h3>' +
-    '<div id="urlscanBody">' + urlscanBlock(d.urlscan) + '</div></div>';
+    '<div id="urlscanBody">' + withSource("urlscan.io", () => urlscanBlock(d.urlscan)) + '</div></div>';
 }
 
 // warning banner for an off-domain redirect
@@ -1046,9 +1112,9 @@ function staleScanNote(t) {
 }
 
 function urlscanBlock(u) {
-  if (isErr(u)) return '<div class="muted" style="margin-bottom:16px">⚠ urlscan search unavailable — ' + esc(u.error) + '. A live scan below may still work.</div>' + liveBtn('▶ Run live scan');
+  if (isErr(u)) return '<div class="muted" style="margin-bottom:16px">Earlier scans are unavailable right now. A live scan below may still work.</div>' + liveBtn('▶ Run live scan');
   if (!u || !u.results || !u.results.length) {
-    return '<div class="muted" style="margin-bottom:16px">No prior urlscan submissions for this target. Run a fresh scan to capture a live screenshot and detect redirects.</div>' +
+    return '<div class="muted" style="margin-bottom:16px">No earlier scans of this target. Run a fresh scan to capture a live screenshot and detect redirects.</div>' +
            liveBtn('▶ Run live scan');
   }
   const top = u.results[0];
@@ -1056,8 +1122,8 @@ function urlscanBlock(u) {
   info += urlscanVerdictRows(u);
   info += kvrow("Recent scans", u.count || u.results.length);
   info += u.results.slice(0, 4).map(r =>
-    '<div class="scanrow"><a href="' + esc(safeUrl(r.result)) + '" target="_blank" rel="noopener">' +
-    esc(r.url || "") + '</a><div class="muted" style="font-size:11px">' +
+    '<div class="scanrow"><span class="scan-url">' +
+    esc(r.url || "") + '</span><div class="muted" style="font-size:11px">' +
     esc((r.time || "").slice(0, 10)) + '</div></div>').join("");
   info += '<div style="margin-top:20px">' + liveBtn('▶ Re-scan live') + '</div>';
   const danger = !!(u.redirect && u.redirect.offsite);
@@ -1070,7 +1136,7 @@ function urlscanVerdictRows(u) {
   let html = "";
   const v = u.verdict;
   if (v) {
-    html += kvrow("urlscan engine", v.malicious ? "MALICIOUS" : "no detection", v.malicious ? "bad" : "");
+    html += kvrow("Scanner verdict", v.malicious ? "MALICIOUS" : "no detection", v.malicious ? "bad" : "");
     if (v.score) html += kvrow("Engine score", v.score);
     if (v.brands && v.brands.length) html += kvrow("Impersonates", v.brands.join(", "), "bad");
     if (v.categories && v.categories.length) html += kvrow("Categories", v.categories.join(", "));
@@ -1084,8 +1150,7 @@ function urlscanVerdictRows(u) {
 }
 
 function shot(url, link, caption) {
-  return '<a href="' + esc(safeUrl(link || url)) + '" target="_blank" rel="noopener">' +
-    '<img src="' + esc(safeUrl(url)) + '" alt="urlscan screenshot" loading="lazy"></a>' +
+  return '<img src="' + esc(safeUrl(url)) + '" alt="page screenshot" loading="lazy">' +
     (caption ? '<div class="us-cap">' + esc(caption) + '</div>' : '');
 }
 
@@ -1094,7 +1159,7 @@ async function runLiveScan() {
   const body = $("urlscanBody");
   const target = current.url || current.domain;
   body.innerHTML ='<div class="loader fade-in" style="margin:6px 0"><div class="loader-bar"><i id="liveFill"></i></div>' +
-    '<div class="loader-step"><span class="lstep" id="liveStep">Submitting <b>' + esc(target) + '</b> to urlscan…</span>' +
+    '<div class="loader-step"><span class="lstep" id="liveStep">Submitting <b>' + esc(target) + '</b> for scanning…</span>' +
     '<span class="lpct" id="livePct">0%</span></div></div>';
   let pct = 0;
   const timer = setInterval(function () {
@@ -1124,8 +1189,7 @@ async function runLiveScan() {
       if (res.ready) { finishBar(); await new Promise(r => setTimeout(r, 180)); renderLiveResult(res); return; }
     }
     clearInterval(timer);
-    body.innerHTML = '<div class="muted">Scan is taking longer than expected. ' +
-      '<a href="https://urlscan.io/result/' + esc(sub.uuid) + '/" target="_blank" rel="noopener">View on urlscan ↗</a></div>' + liveBtn('▶ Re-scan live');
+    body.innerHTML = '<div class="muted">Scan is taking longer than expected — try again in a minute.</div>' + liveBtn('▶ Re-scan live');
   } catch (e) {
     clearInterval(timer);
     body.innerHTML = '<div class="v bad">Live scan failed (network).</div>' + liveBtn('▶ Retry');
@@ -1135,8 +1199,8 @@ async function runLiveScan() {
 function renderLiveResult(res) {
   const body = $("urlscanBody");
   let info = '<div class="muted" style="font-size:11px;margin-bottom:12px">↻ Fresh scan · ' + esc((res.time || "").slice(0, 16).replace("T", " ")) + '</div>';
-  info += urlscanVerdictRows(res);
-  if (res.final_url) info += '<div class="scanrow"><a href="' + esc(safeUrl(res.result)) + '" target="_blank" rel="noopener">' + esc(res.final_url) + '</a></div>';
+  info += withSource("urlscan.io", () => urlscanVerdictRows(res));
+  if (res.final_url) info += '<div class="scanrow"><span class="scan-url">' + esc(res.final_url) + '</span></div>';
   info += '<div style="margin-top:20px">' + liveBtn('▶ Re-scan live') + '</div>';
   const danger = !!(res.redirect && res.redirect.offsite);
   const shotHtml = res.screenshot ? shot(res.screenshot, res.result, res.final_url) : "";
@@ -1155,7 +1219,7 @@ function hostsBlock(d) {
   if (rows.length) {
     html += kvrow("Hosts found", h.capped ? rows.length + "+ (first " + rows.length + " shown)" : String(rows.length), "",
       "Hostnames found in DNS for this domain, with the IP, network owner and the web server / page title seen on each. " +
-      "Staging, VPN, admin or forgotten hosts are worth a closer look.");
+      "Staging, VPN, admin or forgotten hosts are worth a closer look.", "DNSDumpster");
     html += '<div class="htable"><div class="hrow hhead"><span>Host</span><span>IP</span><span>Network</span><span>Web</span></div>' +
       rows.map(r => '<div class="hrow">' +
         '<span class="h-host">' + esc(r.host || "") + '</span>' +
@@ -1171,7 +1235,7 @@ function hostsBlock(d) {
   if (certOnly.length) {
     html += '<div class="cert-gap">' + kvrow(rows.length ? "Cert-only" : "Cert names", String(certOnly.length), "",
       "Hostnames listed on public TLS certificates for this domain" + (rows.length ? " that didn't turn up in DNS" : "") +
-      ". Names that don't resolve may be internal, retired, or new.") + '</div>';
+      ". Names that don't resolve may be internal, retired, or new.", "crt.sh certificate transparency logs") + '</div>';
     html += '<div class="subs cert-only">' + certOnly.map(n => '<div>' + esc(n) + '</div>').join("") + '</div>';
   }
   if (!html && h && !isErr(h)) html = muted("No hosts found in DNS or on certificates for this domain.");
