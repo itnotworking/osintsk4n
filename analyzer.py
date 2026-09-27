@@ -741,13 +741,13 @@ def triage_lookup(file_hash):
     }
 
 
-@_cached
 def _abusech_detail(status, body):
     """abuse.ch's own status (e.g. unknown_auth_key) — tells a mistyped key from a disabled account."""
     qs = (body or {}).get("query_status") if isinstance(body, dict) else None
     return f"HTTP {status}" + (f" · {qs}" if qs else "")
 
 
+@_cached
 def malwarebazaar(file_hash):
     """abuse.ch MalwareBazaar — known malware sample lookup (family, tags, delivery)."""
     # abuse.ch rejects every unauthenticated call now — no key means the source is off, not failing
@@ -757,7 +757,7 @@ def malwarebazaar(file_hash):
     st, d, err = _api("https://mb-api.abuse.ch/api/v1/", method="POST", headers=headers,
                       data={"query": "get_info", "hash": file_hash}, timeout=12)
     if err:
-        return {"error": err}
+        return {"error": err, "detail": _abusech_detail(st, d)} if st else {"error": err}
     qs = (d or {}).get("query_status")
     if qs in ("hash_not_found", "no_results"):
         return {"found": False}
@@ -1120,7 +1120,7 @@ def threatfox_lookup(ioc, registrable=None):
     st, d, err = _api("https://threatfox-api.abuse.ch/api/v1/", method="POST", headers=headers,
                       json_body={"query": "search_ioc", "search_term": ioc}, timeout=20)   # ~10s typical; the most common IPs (8.8.8.8) run past 30s
     if err:
-        return {"error": err}
+        return {"error": err, "detail": _abusech_detail(st, d)} if st else {"error": err}
     qs = (d or {}).get("query_status")
     if qs == "no_result":
         return {"found": False}
@@ -1158,7 +1158,7 @@ def urlhaus_host(host):
     st, d, err = _api("https://urlhaus-api.abuse.ch/v1/host/", method="POST", headers=headers,
                       data={"host": host}, timeout=10)
     if err:
-        return {"error": err}
+        return {"error": err, "detail": _abusech_detail(st, d)} if st else {"error": err}
     qs = (d or {}).get("query_status")
     if qs == "no_results":
         return {"found": False}
