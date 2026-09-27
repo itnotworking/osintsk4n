@@ -1227,6 +1227,7 @@ function evidenceRaw(d) {
     const uh = d.urlhaus; if (!uh) add("URLhaus", "na"); else uh.found ? add("URLhaus", "hit", (uh.url_count || 0) + " malware URLs") : add("URLhaus", "clean", "no match");
     const gn = d.greynoise;
     if (!gn) add("GreyNoise", "na");
+    else if (gn.error) add("GreyNoise", "na", gn.error + " (free tier, best-effort)");
     else (gn.observed && gn.classification === "malicious") ? add("GreyNoise", "hit", "classified malicious") : add("GreyNoise", "clean", gn.observed ? (gn.classification || "observed") : "not observed scanning");
     const sh = d.shodan;
     if (!sh) add("Shodan", "na");

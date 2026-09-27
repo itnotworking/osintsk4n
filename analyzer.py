@@ -1980,7 +1980,7 @@ SOURCE_LABELS = {
 # The sources a clean verdict actually rests on, per indicator type.
 CORE_SOURCES = {
     "hash": ("vt_file", "mb", "hybrid", "triage", "threatfox"),
-    "ip": ("vt", "abuse", "ipqs", "otx", "threatfox", "urlhaus", "greynoise"),
+    "ip": ("vt", "abuse", "ipqs", "otx", "threatfox", "urlhaus"),
     "domain": ("vt", "gsb", "threatfox", "urlhaus", "otx", "urlscan"),
     "email": ("vt", "gsb", "threatfox", "urlhaus", "otx", "ipqs", "hudsonrock", "xon"),
     "provider_email": ("ipqs", "hudsonrock", "xon"),
@@ -2012,7 +2012,9 @@ def _ignored_sources(result):
 def _flag_degraded(result):
     """Record which sources failed, and refuse to call something clean when most of the evidence is
     missing — a dead source is absence of data, not evidence of safety."""
-    ignored = _ignored_sources(result)
+    # GreyNoise free tier is 10 lookups/day per shared egress IP (50/week even with a business key),
+    # so it runs out daily under team use: shown when it answers, never counted as a missing source.
+    ignored = _ignored_sources(result) | {"greynoise"}
     errs, seen = [], set()
     for key, label in SOURCE_LABELS.items():
         if key in ignored:
