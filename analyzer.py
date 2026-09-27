@@ -239,6 +239,16 @@ def _api(url, method="GET", headers=None, params=None, data=None, json_body=None
     return r.status_code, body, _why(r.status_code, body)
 
 
+def _api_retry(url, tries=2, **kw):
+    """_api with a retry on timeout — for sources that are slow now and then rather than down (OTX)."""
+    st, body, err = _api(url, **kw)
+    for _ in range(tries - 1):
+        if err != "timed out":
+            break
+        st, body, err = _api(url, **kw)
+    return st, body, err
+
+
 # --------------------------------------------------------------------------
 # Input parsing / hardening
 # --------------------------------------------------------------------------
@@ -731,7 +741,8 @@ def triage_lookup(file_hash):
 @_cached
 def malwarebazaar(file_hash):
     """abuse.ch MalwareBazaar — known malware sample lookup (family, tags, delivery)."""
-    if not file_hash:
+    # abuse.ch rejects every unauthenticated call now — no key means the source is off, not failing
+    if not file_hash or not ABUSECH_API_KEY:
         return None
     headers = {"User-Agent": USER_AGENT}
     if ABUSECH_API_KEY:
@@ -928,8 +939,8 @@ def otx_lookup(domain):
     headers = {"User-Agent": USER_AGENT}
     if OTX_API_KEY:
         headers["X-OTX-API-KEY"] = OTX_API_KEY
-    st, data, err = _api(f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/general",
-                         headers=headers, timeout=16)
+    st, data, err = _api_retry(f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/general",
+                               headers=headers, timeout=12)
     if err:
         return {"error": err}
     if not data:
@@ -965,8 +976,8 @@ def otx_ip(ip):
     headers = {"User-Agent": USER_AGENT}
     if OTX_API_KEY:
         headers["X-OTX-API-KEY"] = OTX_API_KEY
-    st, gen, err = _api(f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
-                        headers=headers, timeout=16)   # OTX IP general is slow
+    st, gen, err = _api_retry(f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
+                              headers=headers, timeout=12)   # OTX is slow now and then
     if err:
         return {"error": err}
     if not gen:
@@ -1096,7 +1107,7 @@ def threatfox_lookup(ioc, registrable=None):
     """abuse.ch ThreatFox — is this EXACT host a known malware/C2 IOC?
     ThreatFox search is substring-ish, so we filter to exact-host matches to avoid
     false-flagging legitimate infra that malware merely abuses (e.g. drive.google.com)."""
-    if not ioc:
+    if not ioc or not ABUSECH_API_KEY:
         return None
     headers = {"User-Agent": USER_AGENT}
     if ABUSECH_API_KEY:
@@ -1136,7 +1147,7 @@ def threatfox_lookup(ioc, registrable=None):
 @_cached
 def urlhaus_host(host):
     """abuse.ch URLhaus — known malware-distribution host lookup."""
-    if not host:
+    if not host or not ABUSECH_API_KEY:
         return None
     headers = {"User-Agent": USER_AGENT}
     if ABUSECH_API_KEY:
@@ -1974,11 +1985,36 @@ CORE_SOURCES = {
 }
 
 
+def _configured(src):
+    """Is this source switched on? A source with no key is off — it shouldn't count as missing."""
+    return bool({
+        "vt": VT_API_KEY, "vt_file": VT_API_KEY, "passive_dns": VT_API_KEY,
+        "abuse": ABUSEIPDB_API_KEY, "ipqs": IPQS_API_KEY, "gsb": GSB_API_KEY,
+        "threatfox": ABUSECH_API_KEY, "urlhaus": ABUSECH_API_KEY, "mb": ABUSECH_API_KEY,
+        "hybrid": HYBRID_API_KEY, "triage": TRIAGE_API_KEY,
+    }.get(src, True))
+
+
+def _ignored_sources(result):
+    """Sources this lookup deliberately doesn't use — their failures can't change the verdict."""
+    ign = set()
+    if result.get("is_provider"):      # consumer mailbox: only address-level sources matter
+        ign |= {"vt", "abuse", "otx", "gsb", "threatfox", "urlhaus", "greynoise", "shodan", "urlscan"}
+    if result.get("is_platform"):      # github.com etc.: feed mentions are reframed as context
+        ign |= {"otx", "threatfox", "urlhaus"}
+    if result.get("is_tenant"):        # shared host: the IP's reputation is other tenants'
+        ign |= {"abuse"}
+    return ign
+
+
 def _flag_degraded(result):
     """Record which sources failed, and refuse to call something clean when most of the evidence is
     missing — a dead source is absence of data, not evidence of safety."""
+    ignored = _ignored_sources(result)
     errs, seen = [], set()
     for key, label in SOURCE_LABELS.items():
+        if key in ignored:
+            continue
         v = result.get(key)
         if isinstance(v, dict) and v.get("error") and label not in seen:
             seen.add(label)
@@ -1990,7 +2026,7 @@ def _flag_degraded(result):
         kind = "provider_email"
     elif kind == "url":
         kind = "domain"
-    core = CORE_SOURCES.get(kind, ())
+    core = tuple(k for k in CORE_SOURCES.get(kind, ()) if _configured(k) and k not in ignored)
     # count what actually came back usable — errors, missing keys and silent sources all count against
     answered = [k for k in core if isinstance(result.get(k), dict) and not result[k].get("error")]
     result["core_answered"] = len(answered)
