@@ -742,14 +742,18 @@ def triage_lookup(file_hash):
 
 
 @_cached
+def _abusech_detail(status, body):
+    """abuse.ch's own status (e.g. unknown_auth_key) — tells a mistyped key from a disabled account."""
+    qs = (body or {}).get("query_status") if isinstance(body, dict) else None
+    return f"HTTP {status}" + (f" · {qs}" if qs else "")
+
+
 def malwarebazaar(file_hash):
     """abuse.ch MalwareBazaar — known malware sample lookup (family, tags, delivery)."""
     # abuse.ch rejects every unauthenticated call now — no key means the source is off, not failing
     if not file_hash or not ABUSECH_API_KEY:
         return None
-    headers = {"User-Agent": USER_AGENT}
-    if ABUSECH_API_KEY:
-        headers["Auth-Key"] = ABUSECH_API_KEY
+    headers = {"User-Agent": USER_AGENT, "Auth-Key": ABUSECH_API_KEY}
     st, d, err = _api("https://mb-api.abuse.ch/api/v1/", method="POST", headers=headers,
                       data={"query": "get_info", "hash": file_hash}, timeout=12)
     if err:
@@ -758,7 +762,7 @@ def malwarebazaar(file_hash):
     if qs in ("hash_not_found", "no_results"):
         return {"found": False}
     if qs != "ok" or not d.get("data"):
-        return {"error": _why(st, d)}
+        return {"error": _why(st, d), "detail": _abusech_detail(st, d)}
     s = d["data"][0]
     return {
         "found": True,
@@ -1112,9 +1116,7 @@ def threatfox_lookup(ioc, registrable=None):
     false-flagging legitimate infra that malware merely abuses (e.g. drive.google.com)."""
     if not ioc or not ABUSECH_API_KEY:
         return None
-    headers = {"User-Agent": USER_AGENT}
-    if ABUSECH_API_KEY:
-        headers["Auth-Key"] = ABUSECH_API_KEY
+    headers = {"User-Agent": USER_AGENT, "Auth-Key": ABUSECH_API_KEY}
     st, d, err = _api("https://threatfox-api.abuse.ch/api/v1/", method="POST", headers=headers,
                       json_body={"query": "search_ioc", "search_term": ioc}, timeout=20)   # ~10s typical; the most common IPs (8.8.8.8) run past 30s
     if err:
@@ -1123,7 +1125,7 @@ def threatfox_lookup(ioc, registrable=None):
     if qs == "no_result":
         return {"found": False}
     if qs != "ok":
-        return {"error": _why(st, d)}
+        return {"error": _why(st, d), "detail": _abusech_detail(st, d)}
     if not d.get("data"):
         return {"found": False}
 
@@ -1152,9 +1154,7 @@ def urlhaus_host(host):
     """abuse.ch URLhaus — known malware-distribution host lookup."""
     if not host or not ABUSECH_API_KEY:
         return None
-    headers = {"User-Agent": USER_AGENT}
-    if ABUSECH_API_KEY:
-        headers["Auth-Key"] = ABUSECH_API_KEY
+    headers = {"User-Agent": USER_AGENT, "Auth-Key": ABUSECH_API_KEY}
     st, d, err = _api("https://urlhaus-api.abuse.ch/v1/host/", method="POST", headers=headers,
                       data={"host": host}, timeout=10)
     if err:
@@ -1163,7 +1163,7 @@ def urlhaus_host(host):
     if qs == "no_results":
         return {"found": False}
     if qs != "ok":
-        return {"error": _why(st, d)}
+        return {"error": _why(st, d), "detail": _abusech_detail(st, d)}
     urls = d.get("urls") or []
     return {"found": True, "url_count": d.get("url_count") or len(urls),
             "threats": sorted({u.get("threat") for u in urls if u.get("threat")}),
