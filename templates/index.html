@@ -875,11 +875,13 @@ function ipRepBlock(d) {
   return html;
 }
 
-// cpe:/a:openbsd:openssh:6.6.1p1 → "openssh 6.6.1p1"
+// cpe:/a:openbsd:openssh:6.6.1p1 → "openssh 6.6.1p1"; generic products keep their vendor
+// (cpe:/a:apache:http_server:2.4.7 → "apache http server 2.4.7")
 function cpeNames(cpes) {
   return [...new Set((cpes || []).map(c => {
-    const p = String(c).split(":");
-    return ((p[3] || p[2] || "").replace(/_/g, " ") + (p[4] ? " " + p[4] : "")).trim();
+    const p = String(c).split(":"), vendor = p[2] || "", product = p[3] || vendor;
+    const name = /(^|_)server$/.test(product) && !product.startsWith(vendor) ? vendor + " " + product : product;
+    return (name.replace(/_/g, " ") + (p[4] ? " " + p[4] : "")).trim();
   }).filter(Boolean))];
 }
 
@@ -1165,8 +1167,9 @@ function hostsBlock(d) {
   const seen = new Set(rows.map(r => (r.host || "").toLowerCase()));
   const certOnly = certNames.filter(n => !seen.has(n));
   if (certOnly.length) {
-    html += kvrow(rows.length ? "Only on certificates" : "Subdomains (certificates)", String(certOnly.length), "",
-      "Hostnames listed on public TLS certificates for this domain. Ones that don't resolve in DNS may be internal, retired, or new.");
+    html += '<div class="cert-gap">' + kvrow(rows.length ? "Cert-only" : "Cert names", String(certOnly.length), "",
+      "Hostnames listed on public TLS certificates for this domain" + (rows.length ? " that didn't turn up in DNS" : "") +
+      ". Names that don't resolve may be internal, retired, or new.") + '</div>';
     html += '<div class="subs cert-only">' + certOnly.map(n => '<div>' + esc(n) + '</div>').join("") + '</div>';
   }
   if (!html && h && !isErr(h)) html = muted("No hosts found in DNS or on certificates for this domain.");

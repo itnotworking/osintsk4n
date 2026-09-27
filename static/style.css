@@ -292,6 +292,7 @@ a:hover { color: #b9c0f0; text-decoration: underline; }
 .h-own, .h-web { color: var(--muted); }
 .h-web i { font-style: normal; color: #b4b4be; }
 .subs.cert-only { margin-top: 8px; columns: 3 200px; column-gap: 24px; }
+.htable + .cert-gap { margin-top: 18px; }
 @media (max-width: 680px) {
   .hrow { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; }
   .hrow .h-own, .hrow .h-web { grid-column: 1 / -1; }
