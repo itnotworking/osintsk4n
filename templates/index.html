@@ -203,7 +203,10 @@ function verdictClass(v) {
 
 // A source that errored is a failed lookup, never a clean result — render it that way everywhere.
 function isErr(x) { return !!(x && typeof x === "object" && x.error); }
-function failNote(x) { return muted("⚠ Unavailable — " + x.error + ". Failed lookup, not a clean result."); }
+function failNote(x) {
+  return muted("⚠ Unavailable — " + x.error + ". Failed lookup, not a clean result." +
+    (x.detail ? "\nProvider said: " + x.detail : ""));
+}
 function failRow(label, x) { return kvrow(label, "⚠ unavailable — " + x.error, "warn", "This source didn't answer, so it tells us nothing either way — it is NOT a clean result."); }
 function srcErrNames(d) { return (d.source_errors || []).map(e => e.source + ": " + e.error); }
 // ticket audit trail: say when some sources were reused from the cache rather than fetched now

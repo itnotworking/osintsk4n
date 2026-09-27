@@ -1113,7 +1113,7 @@ def threatfox_lookup(ioc, registrable=None):
     if ABUSECH_API_KEY:
         headers["Auth-Key"] = ABUSECH_API_KEY
     st, d, err = _api("https://threatfox-api.abuse.ch/api/v1/", method="POST", headers=headers,
-                      json_body={"query": "search_ioc", "search_term": ioc}, timeout=30)
+                      json_body={"query": "search_ioc", "search_term": ioc}, timeout=20)   # authenticated search runs ~10s
     if err:
         return {"error": err}
     qs = (d or {}).get("query_status")
@@ -1241,7 +1241,7 @@ def ipqs_email(email):
         return {"error": err}
     # out of credits comes back as HTTP 200 + success:false, so check the body too
     if not data or data.get("success") is False:
-        return {"error": _why(st, data)}
+        return {"error": _why(st, data), "detail": str((data or {}).get("message") or "")[:160]}
 
     def _human(v):
         return v.get("human") if isinstance(v, dict) else v
@@ -1274,7 +1274,7 @@ def ipqs_ip(ip):
     if err:
         return {"error": err}
     if not data or data.get("success") is False:
-        return {"error": _why(st, data)}
+        return {"error": _why(st, data), "detail": str((data or {}).get("message") or "")[:160]}
 
     def _v(x):
         # premium-only fields come back as "Premium required." on the free tier — drop those
