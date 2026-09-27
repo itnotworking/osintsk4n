@@ -852,10 +852,13 @@ function ipRepBlock(d) {
     html += kvrow("Tor exit", bl.tor_exit == null ? "unknown (list unavailable)" : (bl.tor_exit ? "YES" : "no"), bl.tor_exit ? "warn" : "",
       "Checked against the published Tor exit-node list, refreshed every 6 hours.");
   }
+  // no record and a record with zero ports mean the same thing to an analyst — one wording for both
+  const noPorts = () => kvrow("Open ports", "none on record", "",
+    "This IP hasn't been seen with open services in internet-wide scans. CDN and anycast edge IPs often aren't.");
   if (isErr(s)) html += failRow("Exposure", s);
   else if (s) {
-    html += kvrow("Open ports", (s.ports && s.ports.length) ? s.ports.join(", ") : "none seen", "",
-      "Ports seen open by internet-wide scanning (updated weekly).");
+    html += (s.ports && s.ports.length) ? kvrow("Open ports", s.ports.join(", "), "",
+      "Ports seen open by internet-wide scanning (updated weekly).") : noPorts();
     const sw = cpeNames(s.cpes);
     if (sw.length) html += kvrow("Software", sw.join(", "), "",
       "Products and versions fingerprinted on those ports. Old versions are where the CVEs below come from.");
@@ -867,8 +870,7 @@ function ipRepBlock(d) {
     if (s.hostnames && s.hostnames.length) html += kvrow("Hostnames", s.hostnames.slice(0, 6).join(", ") + (s.hostnames.length > 6 ? " …" : ""));
     if (s.tags && s.tags.length) html += kvrow("Tags", s.tags.join(", "));
   } else {
-    html += kvrow("Open ports", "none on record", "",
-      "This IP hasn't been seen with open services in internet-wide scans. CDN and anycast edge IPs often aren't.");
+    html += noPorts();
   }
   return html;
 }
@@ -1350,9 +1352,10 @@ function evidenceRaw(d) {
     else if (bl.ipsum_count == null) add("Public blocklists", "na", "IPsum unavailable");
     else bl.ipsum_count > 0 ? add("Public blocklists", "hit", "on " + bl.ipsum_count + " list(s)" + (bl.tor_exit ? ", Tor exit" : ""))
       : add("Public blocklists", "clean", "not listed" + (bl.tor_exit ? ", Tor exit" : ""));
-    const sh = d.shodan;
-    if (!sh) add("Shodan", "na");
-    else { const np = (sh.ports || []).length; add("Shodan", "clean", np + " open port" + (np === 1 ? "" : "s")); }
+    // no scan record is an answer ("nothing open seen"), not a failure; a real failure is relabeled "no data"
+    // by evidence() because source_errors uses the same name
+    const sh = d.shodan, np = ((sh && sh.ports) || []).length;
+    add("Exposure scan", "clean", np ? np + " open port" + (np === 1 ? "" : "s") : "no open ports on record");
     return out;
   }
 

@@ -2100,7 +2100,7 @@ SOURCE_LABELS = {
     "vt": "VirusTotal", "vt_file": "VirusTotal", "passive_dns": "VirusTotal passive DNS",
     "abuse": "AbuseIPDB", "ipqs": "IPQualityScore", "otx": "AlienVault OTX",
     "threatfox": "ThreatFox", "urlhaus": "URLhaus", "mb": "MalwareBazaar",
-    "proxycheck": "proxycheck.io", "blocklists": "Public blocklists", "shodan": "Shodan", "gsb": "Safe Browsing", "urlscan": "urlscan.io",
+    "proxycheck": "proxycheck.io", "blocklists": "Public blocklists", "shodan": "Exposure scan", "gsb": "Safe Browsing", "urlscan": "urlscan.io",
     "hybrid": "Hybrid Analysis", "triage": "Hatching Triage",
     "hudsonrock": "Hudson Rock", "xon": "XposedOrNot",
 }
