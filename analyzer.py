@@ -1115,7 +1115,7 @@ def threatfox_lookup(ioc, registrable=None):
     if ABUSECH_API_KEY:
         headers["Auth-Key"] = ABUSECH_API_KEY
     st, d, err = _api("https://threatfox-api.abuse.ch/api/v1/", method="POST", headers=headers,
-                      json_body={"query": "search_ioc", "search_term": ioc}, timeout=30)   # ~10s typical, >20s for very common IPs
+                      json_body={"query": "search_ioc", "search_term": ioc}, timeout=20)   # ~10s typical; the most common IPs (8.8.8.8) run past 30s
     if err:
         return {"error": err}
     qs = (d or {}).get("query_status")
