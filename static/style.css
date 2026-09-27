@@ -355,6 +355,14 @@ a:hover { color: #b9c0f0; text-decoration: underline; }
 }
 .stale-note b { color: var(--warn); font-weight: 700; }
 .muted { color: var(--muted); }
+/* incomplete lookup — sources that failed for this result */
+.degraded {
+  font-size: 12.5px; color: var(--text); line-height: 1.6; margin: 18px 0 4px; padding: 10px 14px;
+  border: 1px solid rgba(212,162,74,0.38); border-left: 3px solid var(--warn);
+  border-radius: 7px; background: rgba(212,162,74,0.08);
+}
+.degraded b { color: var(--warn); }
+.degraded .src { color: var(--warn); font-weight: 600; }
 .warn-note { color: var(--warn); line-height: 1.6; }
 .hidden { display: none; }
 .fade-in { animation: fadeIn .25s ease forwards; }

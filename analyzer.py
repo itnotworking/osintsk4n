@@ -149,6 +149,47 @@ def safe_get(url, headers=None, params=None, timeout=8):
     return None
 
 
+def _why(status, body):
+    """Short, analyst-readable reason for a failed intel call."""
+    msg = ""
+    if isinstance(body, dict):
+        for k in ("message", "error", "query_status", "errors"):
+            v = body.get(k)
+            if v:
+                msg = v if isinstance(v, str) else json.dumps(v)[:120]
+                break
+    low = msg.lower()
+    if status == 429 or any(w in low for w in ("quota", "credit", "exceeded", "rate limit", "too many")):
+        return "quota / rate limit reached"
+    if status in (401, 403) or any(w in low for w in ("auth", "api key", "apikey", "unauthorized", "forbidden")):
+        return "API key rejected"
+    if status and status >= 500:
+        return f"service error (HTTP {status})"
+    return msg[:60] or (f"HTTP {status}" if status else "no response")
+
+
+def _api(url, method="GET", headers=None, params=None, data=None, json_body=None, timeout=10):
+    """Like safe_get, but says WHY a call failed so a dead source is never read as a clean one.
+    Returns (status, body, error); error is None on HTTP 200."""
+    h = {"User-Agent": USER_AGENT}
+    if headers:
+        h.update(headers)
+    try:
+        r = requests.request(method, url, headers=h, params=params, data=data,
+                             json=json_body, timeout=timeout)
+    except requests.Timeout:
+        return None, None, "timed out"
+    except Exception:
+        return None, None, "unreachable"
+    try:
+        body = r.json()
+    except Exception:
+        body = None
+    if r.status_code == 200:
+        return 200, body, None
+    return r.status_code, body, _why(r.status_code, body)
+
+
 # --------------------------------------------------------------------------
 # Input parsing / hardening
 # --------------------------------------------------------------------------
@@ -382,11 +423,13 @@ def ip_info(ip):
 def check_vt_domain(domain):
     if not VT_API_KEY:
         return None
-    data = safe_get(
-        f"https://www.virustotal.com/api/v3/domains/{domain}",
-        headers={"x-apikey": VT_API_KEY},
-    )
-    return data.get("data", {}).get("attributes") if data else None
+    st, data, err = _api(f"https://www.virustotal.com/api/v3/domains/{domain}",
+                         headers={"x-apikey": VT_API_KEY}, timeout=8)
+    if st == 404:
+        return None
+    if err:
+        return {"error": err}
+    return (data or {}).get("data", {}).get("attributes")
 
 
 ABUSE_CATEGORIES = {
@@ -407,12 +450,12 @@ def abuseipdb(ip, verbose=False):
     params = {"ipAddress": ip, "maxAgeInDays": 90}
     if verbose:
         params["verbose"] = ""
-    res = safe_get(
-        "https://api.abuseipdb.com/api/v2/check",
-        headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
-        params=params,
-    )
-    data = res.get("data") if res else None
+    st, res, err = _api("https://api.abuseipdb.com/api/v2/check",
+                        headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
+                        params=params, timeout=8)
+    if err:
+        return {"error": err}
+    data = (res or {}).get("data")
     if not data:
         return None
     if verbose and data.get("reports"):
@@ -522,11 +565,14 @@ def check_vt_file(file_hash):
     """VirusTotal file endpoint — detection ratio, malware family, type, names, first seen."""
     if not file_hash or not VT_API_KEY:
         return None
-    data = safe_get(
-        f"https://www.virustotal.com/api/v3/files/{file_hash}",
-        headers={"x-apikey": VT_API_KEY},
-    )
-    a = data.get("data", {}).get("attributes") if data else None
+    # 404 = VT has genuinely never seen it; anything else failing must NOT read as "unknown sample"
+    st, data, err = _api(f"https://www.virustotal.com/api/v3/files/{file_hash}",
+                         headers={"x-apikey": VT_API_KEY}, timeout=8)
+    if st == 404:
+        return {"found": False}
+    if err:
+        return {"error": err}
+    a = (data or {}).get("data", {}).get("attributes")
     if not a:
         return {"found": False}
     ptc = a.get("popular_threat_classification") or {}
@@ -599,17 +645,21 @@ def triage_lookup(file_hash):
     """Hatching Triage (tria.ge) — sandbox score/family/tags for a hash."""
     if not file_hash or not TRIAGE_API_KEY:
         return None
-    headers = {"Authorization": "Bearer " + TRIAGE_API_KEY, "User-Agent": USER_AGENT}
-    data = safe_get("https://tria.ge/api/v0/search", headers=headers,
-                    params={"query": file_hash}, timeout=12)
+    headers = {"Authorization": "Bearer " + TRIAGE_API_KEY}
+    st, data, err = _api("https://tria.ge/api/v0/search", headers=headers,
+                         params={"query": file_hash}, timeout=12)
+    if err:
+        return {"error": err}
     samples = (data or {}).get("data") or []
     if not samples:
         return {"found": False}
     sid = samples[0].get("id")
     if not sid:
         return {"found": False}
-    ov = safe_get(f"https://tria.ge/api/v0/samples/{sid}/overview.json",
-                  headers=headers, timeout=12)
+    st, ov, err = _api(f"https://tria.ge/api/v0/samples/{sid}/overview.json",
+                       headers=headers, timeout=12)
+    if err:
+        return {"error": err}
     analysis = (ov or {}).get("analysis") or {}
     fam = analysis.get("family") or []
     if not fam:
@@ -631,17 +681,15 @@ def malwarebazaar(file_hash):
     headers = {"User-Agent": USER_AGENT}
     if ABUSECH_API_KEY:
         headers["Auth-Key"] = ABUSECH_API_KEY
-    try:
-        r = requests.post("https://mb-api.abuse.ch/api/v1/",
-                          data={"query": "get_info", "hash": file_hash},
-                          headers=headers, timeout=12)
-        if r.status_code != 200:
-            return None
-        d = r.json()
-    except Exception:
-        return None
-    if d.get("query_status") != "ok" or not d.get("data"):
+    st, d, err = _api("https://mb-api.abuse.ch/api/v1/", method="POST", headers=headers,
+                      data={"query": "get_info", "hash": file_hash}, timeout=12)
+    if err:
+        return {"error": err}
+    qs = (d or {}).get("query_status")
+    if qs in ("hash_not_found", "no_results"):
         return {"found": False}
+    if qs != "ok" or not d.get("data"):
+        return {"error": _why(st, d)}
     s = d["data"][0]
     return {
         "found": True,
@@ -660,11 +708,13 @@ def check_vt_ip(ip):
     """VirusTotal IP-address endpoint — reputation, ASN/owner, country, network."""
     if not ip or not VT_API_KEY:
         return None
-    data = safe_get(
-        f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
-        headers={"x-apikey": VT_API_KEY},
-    )
-    a = data.get("data", {}).get("attributes") if data else None
+    st, data, err = _api(f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
+                         headers={"x-apikey": VT_API_KEY}, timeout=8)
+    if st == 404:
+        return None
+    if err:
+        return {"error": err}
+    a = (data or {}).get("data", {}).get("attributes")
     if not a:
         return None
     return {
@@ -686,11 +736,10 @@ def urlscan_search(domain):
     """urlscan search + verdict for the most recent scan of this domain."""
     headers = {"API-Key": URLSCAN_API_KEY} if URLSCAN_API_KEY else None
     # match on task.domain (the submitted domain), not every domain the page contacted
-    data = safe_get(
-        "https://urlscan.io/api/v1/search/",
-        headers=headers,
-        params={"q": f"task.domain:{domain}", "size": 5},
-    )
+    st, data, err = _api("https://urlscan.io/api/v1/search/", headers=headers,
+                         params={"q": f"task.domain:{domain}", "size": 5}, timeout=8)
+    if err:
+        return {"error": err}
     if not data or not data.get("results"):
         return None
     results = []
@@ -821,10 +870,10 @@ def otx_lookup(domain):
     headers = {"User-Agent": USER_AGENT}
     if OTX_API_KEY:
         headers["X-OTX-API-KEY"] = OTX_API_KEY
-    data = safe_get(
-        f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/general",
-        headers=headers, timeout=16,
-    )
+    st, data, err = _api(f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/general",
+                         headers=headers, timeout=16)
+    if err:
+        return {"error": err}
     if not data:
         return None
     pi = data.get("pulse_info") or {}
@@ -857,10 +906,10 @@ def otx_ip(ip):
     headers = {"User-Agent": USER_AGENT}
     if OTX_API_KEY:
         headers["X-OTX-API-KEY"] = OTX_API_KEY
-    gen = safe_get(
-        f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
-        headers=headers, timeout=16,   # OTX IP general is slow
-    )
+    st, gen, err = _api(f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
+                        headers=headers, timeout=16)   # OTX IP general is slow
+    if err:
+        return {"error": err}
     if not gen:
         return None
     families, adversaries, tags, names = set(), set(), set(), []
@@ -896,10 +945,12 @@ def vt_ip_resolutions(ip):
     """Passive DNS via VirusTotal — domains that have resolved to this IP (uses VT key)."""
     if not ip or not VT_API_KEY:
         return None
-    data = safe_get(
-        f"https://www.virustotal.com/api/v3/ip_addresses/{ip}/resolutions",
-        headers={"x-apikey": VT_API_KEY}, params={"limit": 40},
-    )
+    st, data, err = _api(f"https://www.virustotal.com/api/v3/ip_addresses/{ip}/resolutions",
+                         headers={"x-apikey": VT_API_KEY}, params={"limit": 40}, timeout=8)
+    if st == 404:
+        return None
+    if err:
+        return {"error": err}
     if not data or not data.get("data"):
         return None
     recs = []
@@ -989,16 +1040,16 @@ def threatfox_lookup(ioc, registrable=None):
     headers = {"User-Agent": USER_AGENT}
     if ABUSECH_API_KEY:
         headers["Auth-Key"] = ABUSECH_API_KEY
-    try:
-        r = requests.post("https://threatfox-api.abuse.ch/api/v1/",
-                          json={"query": "search_ioc", "search_term": ioc},
-                          headers=headers, timeout=10)
-        if r.status_code != 200:
-            return None
-        d = r.json()
-    except Exception:
-        return None
-    if d.get("query_status") != "ok" or not d.get("data"):
+    st, d, err = _api("https://threatfox-api.abuse.ch/api/v1/", method="POST", headers=headers,
+                      json_body={"query": "search_ioc", "search_term": ioc}, timeout=10)
+    if err:
+        return {"error": err}
+    qs = (d or {}).get("query_status")
+    if qs == "no_result":
+        return {"found": False}
+    if qs != "ok":
+        return {"error": _why(st, d)}
+    if not d.get("data"):
         return {"found": False}
 
     target = (ioc or "").lower()
@@ -1028,19 +1079,15 @@ def urlhaus_host(host):
     headers = {"User-Agent": USER_AGENT}
     if ABUSECH_API_KEY:
         headers["Auth-Key"] = ABUSECH_API_KEY
-    try:
-        r = requests.post("https://urlhaus-api.abuse.ch/v1/host/",
-                          data={"host": host}, headers=headers, timeout=10)
-        if r.status_code != 200:
-            return None
-        d = r.json()
-    except Exception:
-        return None
-    qs = d.get("query_status")
+    st, d, err = _api("https://urlhaus-api.abuse.ch/v1/host/", method="POST", headers=headers,
+                      data={"host": host}, timeout=10)
+    if err:
+        return {"error": err}
+    qs = (d or {}).get("query_status")
     if qs == "no_results":
         return {"found": False}
     if qs != "ok":
-        return None
+        return {"error": _why(st, d)}
     urls = d.get("urls") or []
     return {"found": True, "url_count": d.get("url_count") or len(urls),
             "threats": sorted({u.get("threat") for u in urls if u.get("threat")}),
@@ -1051,7 +1098,11 @@ def shodan_internetdb(ip):
     """Shodan InternetDB (free, no key) — open ports, CVEs, tags for an IP."""
     if not ip:
         return None
-    data = safe_get(f"https://internetdb.shodan.io/{ip}", timeout=8)
+    st, data, err = _api(f"https://internetdb.shodan.io/{ip}", timeout=8)
+    if st == 404:
+        return None   # InternetDB has nothing on this IP — a real "no data", not a failure
+    if err:
+        return {"error": err}
     if not data:
         return None
     return {"ports": data.get("ports") or [], "vulns": data.get("vulns") or [],
@@ -1064,14 +1115,10 @@ def greynoise_lookup(ip):
     Note: returns HTTP 404 (with a useful JSON body) when an IP hasn't been observed."""
     if not ip:
         return None
-    try:
-        r = requests.get(f"https://api.greynoise.io/v3/community/{ip}",
-                         headers={"User-Agent": USER_AGENT, "Accept": "application/json"}, timeout=8)
-        if r.status_code not in (200, 404):
-            return None
-        data = r.json()
-    except Exception:
-        return None
+    st, data, err = _api(f"https://api.greynoise.io/v3/community/{ip}",
+                         headers={"Accept": "application/json"}, timeout=8)
+    if err and st != 404:
+        return {"error": err}
     if not data:
         return None
     if data.get("classification"):
@@ -1095,16 +1142,11 @@ def safebrowsing(url):
             "threatEntries": [{"url": url}],
         },
     }
-    try:
-        r = requests.post(
-            f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={GSB_API_KEY}",
-            json=body, headers={"User-Agent": USER_AGENT}, timeout=10)
-        if r.status_code != 200:
-            return None
-        d = r.json()
-    except Exception:
-        return None
-    matches = d.get("matches") or []
+    st, d, err = _api(f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={GSB_API_KEY}",
+                      method="POST", json_body=body, timeout=10)
+    if err:
+        return {"error": err}
+    matches = (d or {}).get("matches") or []
     if not matches:
         return {"flagged": False}
     return {"flagged": True, "threats": sorted({m.get("threatType") for m in matches if m.get("threatType")})}
@@ -1114,12 +1156,13 @@ def ipqs_email(email):
     """IPQualityScore — email fraud/reputation (fraud score, abuse, breach leak, disposable…)."""
     if not email or not IPQS_API_KEY:
         return None
-    data = safe_get(
-        f"https://www.ipqualityscore.com/api/json/email/{IPQS_API_KEY}/{quote(email)}",
-        params={"timeout": 7, "fast": "true"}, timeout=12,
-    )
+    st, data, err = _api(f"https://www.ipqualityscore.com/api/json/email/{IPQS_API_KEY}/{quote(email)}",
+                         params={"timeout": 7, "fast": "true"}, timeout=12)
+    if err:
+        return {"error": err}
+    # out of credits comes back as HTTP 200 + success:false, so check the body too
     if not data or data.get("success") is False:
-        return None
+        return {"error": _why(st, data)}
 
     def _human(v):
         return v.get("human") if isinstance(v, dict) else v
@@ -1146,12 +1189,12 @@ def ipqs_ip(ip):
     """IPQualityScore — IP fraud/proxy reputation (fraud score, VPN/Tor, bot, abuse velocity)."""
     if not ip or not IPQS_API_KEY:
         return None
-    data = safe_get(
-        f"https://www.ipqualityscore.com/api/json/ip/{IPQS_API_KEY}/{quote(ip)}",
-        params={"strictness": 1}, timeout=12,
-    )
+    st, data, err = _api(f"https://www.ipqualityscore.com/api/json/ip/{IPQS_API_KEY}/{quote(ip)}",
+                         params={"strictness": 1}, timeout=12)
+    if err:
+        return {"error": err}
     if not data or data.get("success") is False:
-        return None
+        return {"error": _why(st, data)}
 
     def _v(x):
         # premium-only fields come back as "Premium required." on the free tier — drop those
@@ -1202,10 +1245,10 @@ def hudsonrock_email(email):
     stolen — a strong, actionable account-takeover signal for SOC triage."""
     if not email:
         return None
-    data = safe_get(
-        "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-email",
-        params={"email": email}, timeout=14,
-    )
+    st, data, err = _api("https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-email",
+                         params={"email": email}, timeout=14)
+    if err:
+        return {"error": err}
     if not data:
         return None
     stealers = data.get("stealers") or []
@@ -1230,9 +1273,14 @@ def xposedornot_email(email):
     as reputation CONTEXT, not scored as a risk on its own."""
     if not email:
         return None
-    data = safe_get("https://api.xposedornot.com/v1/check-email/" + quote(email), timeout=12)
-    if not data or data.get("Error"):
+    st, data, err = _api("https://api.xposedornot.com/v1/check-email/" + quote(email), timeout=12)
+    # "not found" is a real answer (HTTP 404 or an {"Error": "Not found"} body); anything else failing is not
+    if st == 404 or (isinstance(data, dict) and str(data.get("Error", "")).lower() == "not found"):
         return {"found": False}
+    if err:
+        return {"error": err}
+    if not data or data.get("Error"):
+        return {"error": _why(st, data)}
     breaches = data.get("breaches") or []
     names = breaches[0] if (breaches and isinstance(breaches[0], list)) else breaches
     names = [n for n in names if isinstance(n, str)]
@@ -1836,6 +1884,53 @@ def score(result):
 # Orchestrator
 # --------------------------------------------------------------------------
 
+SOURCE_LABELS = {
+    "vt": "VirusTotal", "vt_file": "VirusTotal", "passive_dns": "VirusTotal passive DNS",
+    "abuse": "AbuseIPDB", "ipqs": "IPQualityScore", "otx": "AlienVault OTX",
+    "threatfox": "ThreatFox", "urlhaus": "URLhaus", "mb": "MalwareBazaar",
+    "greynoise": "GreyNoise", "shodan": "Shodan", "gsb": "Safe Browsing", "urlscan": "urlscan.io",
+    "hybrid": "Hybrid Analysis", "triage": "Hatching Triage",
+    "hudsonrock": "Hudson Rock", "xon": "XposedOrNot",
+}
+
+# The sources a clean verdict actually rests on, per indicator type.
+CORE_SOURCES = {
+    "hash": ("vt_file", "mb", "hybrid", "triage", "threatfox"),
+    "ip": ("vt", "abuse", "ipqs", "otx", "threatfox", "urlhaus", "greynoise"),
+    "domain": ("vt", "gsb", "threatfox", "urlhaus", "otx", "urlscan"),
+    "email": ("vt", "gsb", "threatfox", "urlhaus", "otx", "ipqs", "hudsonrock", "xon"),
+    "provider_email": ("ipqs", "hudsonrock", "xon"),
+}
+
+
+def _flag_degraded(result):
+    """Record which sources failed, and refuse to call something clean when most of the evidence is
+    missing — a dead source is absence of data, not evidence of safety."""
+    errs, seen = [], set()
+    for key, label in SOURCE_LABELS.items():
+        v = result.get(key)
+        if isinstance(v, dict) and v.get("error") and label not in seen:
+            seen.add(label)
+            errs.append({"source": label, "error": v["error"]})
+    result["source_errors"] = errs
+
+    kind = result.get("kind")
+    if kind == "email" and result.get("is_provider"):
+        kind = "provider_email"
+    elif kind == "url":
+        kind = "domain"
+    core = CORE_SOURCES.get(kind, ())
+    # count what actually came back usable — errors, missing keys and silent sources all count against
+    answered = [k for k in core if isinstance(result.get(k), dict) and not result[k].get("error")]
+    result["core_answered"] = len(answered)
+    result["core_total"] = len(core)
+    # positive findings from the sources that did answer still stand; only a would-be "clean" call is withheld
+    if core and len(answered) * 2 < len(core) and result.get("verdict") in ("Likely Legitimate", "Low–Moderate"):
+        result["verdict"] = "Inconclusive"
+        result["reasons"] = [f"Only {len(answered)} of {len(core)} core intel sources returned usable data — "
+                             f"not enough evidence to call this clean"] + (result.get("reasons") or [])
+
+
 def analyze(raw_input):
     parsed = parse_target(raw_input)
     if not parsed["ok"]:
@@ -1863,6 +1958,7 @@ def analyze(raw_input):
         result = _analyze_domain(parsed, domain, ip, raw_input)
 
     result.update(score(result))
+    _flag_degraded(result)
     result["ticket_summary"] = build_summary(result)
     result["keys"] = {
         "vt": bool(VT_API_KEY), "abuseipdb": bool(ABUSEIPDB_API_KEY),

@@ -193,8 +193,16 @@ function lockTicketHeight() {
 }
 
 function verdictClass(v) {
-  return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious","No DNS Record":"neutral"})[v] || "low";
+  return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious","No DNS Record":"neutral","Inconclusive":"neutral"})[v] || "low";
 }
+
+// A source that errored is a failed lookup, never a clean result — render it that way everywhere.
+function isErr(x) { return !!(x && typeof x === "object" && x.error); }
+function failNote(x) { return muted("⚠ Unavailable — " + x.error + ". Failed lookup, not a clean result."); }
+function failRow(label, x) { return kvrow(label, "⚠ unavailable — " + x.error, "warn", "This source didn't answer, so it tells us nothing either way — it is NOT a clean result."); }
+function srcErrNames(d) { return (d.source_errors || []).map(e => e.source + ": " + e.error); }
+// a risk score is meaningless when the lookup failed or the name doesn't exist
+function riskTag(d) { return (d.unresolved || d.verdict === "Inconclusive") ? "" : "  (risk " + d.score + "/100)"; }
 function ringColor(score) {
   if (score >= 80) return "#ff2d2d";   // severe red
   if (score >= 60) return "#f85149";   // red
@@ -218,10 +226,20 @@ const FLAG_TIPS = {
 function verdictBanner(d) {
   const cls = verdictClass(d.verdict);
   const unresolved = !!d.unresolved;               // no DNS → no risk score
-  const ring = unresolved ? "#8b8b96" : ringColor(d.score);
-  const ringNum = unresolved ? "—" : d.score;
-  const pct = unresolved ? 0 : d.score;
-  const sub = unresolved ? "does not resolve — no DNS records" : ("risk " + d.score + "/100");
+  const inconclusive = d.verdict === "Inconclusive";
+  const noScore = unresolved || inconclusive;
+  const ring = noScore ? "#8b8b96" : ringColor(d.score);
+  const ringNum = noScore ? "—" : d.score;
+  const pct = noScore ? 0 : d.score;
+  const sub = unresolved ? "does not resolve — no DNS records"
+    : inconclusive ? "incomplete — only " + d.core_answered + " of " + d.core_total + " core sources returned data"
+    : ("risk " + d.score + "/100");
+  const errs = d.source_errors || [];
+  const degraded = errs.length ?
+    '<div class="degraded fade-in"><b>⚠ Incomplete lookup</b> — ' + errs.length + ' source' + (errs.length === 1 ? "" : "s") +
+    " didn't respond, so " + (inconclusive ? "there isn't enough evidence for a verdict" : "this verdict rests on the others") + ": " +
+    errs.map(e => '<span class="src">' + esc(e.source) + '</span> (' + esc(e.error) + ')').join(" · ") +
+    '. Re-run shortly, or check them directly before closing a ticket.</div>' : '';
   const tags = (d.flags || []).map(f => {
     const tip = FLAG_TIPS[f.cat] || "";
     return '<span class="tag"' + (tip ? ' title="' + esc(tip) + '"' : '') +
@@ -237,6 +255,7 @@ function verdictBanner(d) {
         (tags ? '<div class="tags">' + tags + '</div>' : '') +
       '</div>' +
     '</div>' +
+    degraded +
     '<div class="brief fade-in"><h3>Summary</h3><p>' + esc(buildBrief(d)) + '</p></div>' +
     (d.reasons && d.reasons.length ?
       '<div class="signals fade-in"><h3>Signals</h3><ul>' +
@@ -304,6 +323,17 @@ function ipBrief(d) {
 }
 
 function buildBrief(d) {
+  if (d.verdict === "Inconclusive")
+    return "This lookup is incomplete, so it can't be called clean: only " + d.core_answered + " of " + d.core_total +
+      " core intelligence sources returned usable data, and none of them found anything conclusive. Missing data is not evidence of safety — re-run the lookup shortly, or check the missing sources directly before releasing, allowing, or closing anything.";
+  const s = briefCore(d);
+  // a clean-sounding call made with sources missing has to say so
+  if ((d.source_errors || []).length && (d.verdict === "Likely Legitimate" || d.verdict === "Low–Moderate"))
+    return s + " This rests only on the sources that responded — see the incomplete-lookup note above.";
+  return s;
+}
+
+function briefCore(d) {
   if (d.kind === "ip") return ipBrief(d);
   if (d.unresolved) {
     const what = (d.kind === "email" ? "email domain" : "domain") + " (" + d.defanged + ")";
@@ -446,7 +476,7 @@ function sandboxBlock(d) {
   let html = "";
   // Hybrid Analysis
   if (hy) {
-    if (hy.error) html += kvrow("Hybrid Analysis", hy.error, "warn");
+    if (hy.error) html += failRow("Hybrid Analysis", hy);
     else if (!hy.found) html += kvrow("Hybrid Analysis", hy.note || "not sandboxed", "");
     else {
       const v = (hy.verdict || "").toLowerCase(), ts = hy.threat_score;
@@ -460,7 +490,8 @@ function sandboxBlock(d) {
   } else if (keyOn('hybrid')) html += kvrow("Hybrid Analysis", "unavailable", "");
   // Hatching Triage
   if (tr) {
-    if (tr === true || !tr.found) html += kvrow("Triage", "not sandboxed", "");
+    if (isErr(tr)) html += failRow("Triage", tr);
+    else if (tr === true || !tr.found) html += kvrow("Triage", "not sandboxed", "");
     else {
       const sc = tr.score;
       if (hy) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">Hatching Triage</div>';
@@ -475,6 +506,7 @@ function sandboxBlock(d) {
 
 function vtFileBlock(v, d) {
   if (!v) return muted(keyOn('vt') ? 'VirusTotal returned no data.' : 'Set VT_API_KEY to enable VirusTotal.');
+  if (isErr(v)) return failNote(v);
   if (!v.found) return kvrow("VirusTotal", "file not found (unknown sample)", "") +
     '<div class="muted" style="font-size:11px;margin-top:6px">This hash isn\'t in VirusTotal — it may be a new/unseen file, or benign. Absence isn\'t proof of safety.</div>';
   const s = v.last_analysis_stats || {};
@@ -492,6 +524,7 @@ function vtFileBlock(v, d) {
 
 function mbBlock(m) {
   if (!m) return muted(keyOn('abusech') ? 'MalwareBazaar returned no data.' : 'Set ABUSECH_API_KEY to enable MalwareBazaar.');
+  if (isErr(m)) return failNote(m);
   if (!m.found) return kvrow("MalwareBazaar", "not a known sample", "good") +
     '<div class="muted" style="font-size:11px;margin-top:6px">This hash isn\'t in abuse.ch\'s malware sample database.</div>';
   return kvrow("Status", "KNOWN MALWARE SAMPLE", "bad") +
@@ -507,6 +540,7 @@ function hashThreatBlock(d) {
   const tf = d.threatfox;
   let html = "";
   if (!tf) html += kvrow("ThreatFox", keyOn('abusech') ? "unavailable" : "set ABUSECH_API_KEY", "");
+  else if (isErr(tf)) html += failRow("ThreatFox", tf);
   else if (tf.found) html += kvrow("ThreatFox", "KNOWN IOC" + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), "bad");
   else html += kvrow("ThreatFox", "no known-malware match", "good");
   return html;
@@ -610,6 +644,7 @@ function ipCards(d) {
 
 function abuseDetailBlock(a) {
   if (!a) return muted(keyOn('abuseipdb') ? 'No AbuseIPDB record for this IP.' : 'Set ABUSEIPDB_API_KEY to enable AbuseIPDB.');
+  if (isErr(a)) return failNote(a);
   const sc = a.abuseConfidenceScore || 0;
   return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good"), "AbuseIPDB's confidence (0–100) that this IP is malicious, based on community reports. 50+ is high, 100 is certain.") +
     kvrow("Total reports", (a.totalReports||0) + (a.numDistinctUsers ? "  ·  " + a.numDistinctUsers + " reporters" : ""), "", "How many abuse reports (and distinct reporters) this IP has in the last 90 days.") +
@@ -625,6 +660,7 @@ function abuseDetailBlock(a) {
 
 function vtIpBlock(v) {
   if (!v) return muted(keyOn('vt') ? 'No VirusTotal record for this IP.' : 'Set VT_API_KEY to enable VirusTotal.');
+  if (isErr(v)) return failNote(v);
   const s = v.last_analysis_stats || {};
   return kvrow("Malicious", s.malicious||0, (s.malicious>0?"bad":"good"), VT_TIP.mal) +
     kvrow("Suspicious", s.suspicious||0, (s.suspicious>0?"warn":""), VT_TIP.susp) +
@@ -637,6 +673,7 @@ function vtIpBlock(v) {
 }
 
 function passiveDnsBlock(p) {
+  if (isErr(p)) return failNote(p);
   if (!p || !p.records || !p.records.length)
     return '<pre class="muted">No passive-DNS records (domains that resolved here)</pre>';
   let html = kvrow("Domains seen", p.count || p.records.length);
@@ -651,6 +688,7 @@ function ipThreatBlock(d) {
   let html = "";
   // null = source didn't respond (distinct from 0 reports)
   if (!otx) html += kvrow("OTX", "unavailable", "");
+  else if (isErr(otx)) html += failRow("OTX", otx);
   else if (otx.pulse_count > 0) {
     html += kvrow("OTX reports", otx.pulse_count, "bad");
     if (otx.malware_families && otx.malware_families.length) html += kvrow("Malware", otx.malware_families.join(", "), "bad");
@@ -658,9 +696,11 @@ function ipThreatBlock(d) {
     if (otx.tags && otx.tags.length) html += kvrow("Tags", otx.tags.join(", "));
   } else html += kvrow("OTX reports", "0 (checked, none)", "good");
   if (!tf) html += kvrow("ThreatFox", "unavailable", "");
+  else if (isErr(tf)) html += failRow("ThreatFox", tf);
   else if (tf.found) html += kvrow("ThreatFox", "KNOWN IOC" + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), "bad");
   else html += kvrow("ThreatFox", "no known-malware match", "good");
   if (!uh) html += kvrow("URLhaus", "unavailable", "");
+  else if (isErr(uh)) html += failRow("URLhaus", uh);
   else if (uh.found) html += kvrow("URLhaus", "HOSTS MALWARE · " + (uh.url_count||0) + " URLs", "bad");
   else html += kvrow("URLhaus", "not a known malware host", "good");
   return html;
@@ -684,6 +724,7 @@ const VT_TIP = {
 };
 function vtBlock(v) {
   if (!v) return muted(keyOn('vt') ? 'No VirusTotal record for this indicator.' : 'Set VT_API_KEY to enable VirusTotal.');
+  if (isErr(v)) return failNote(v);
   const s = v.last_analysis_stats || {};
   const rep = v.reputation;
   return kvrow("Malicious", s.malicious||0, (s.malicious>0?"bad":"good"), VT_TIP.mal) +
@@ -695,6 +736,7 @@ function vtBlock(v) {
 }
 function abuseBlock(a) {
   if (!a) return muted(!(current && current.ip) ? 'Domain did not resolve to an IP — no IP reputation to check.' : (keyOn('abuseipdb') ? 'No AbuseIPDB record for this IP.' : 'Set ABUSEIPDB_API_KEY to enable AbuseIPDB.'));
+  if (isErr(a)) return failNote(a);
   const sc = a.abuseConfidenceScore || 0;
   return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good"), "AbuseIPDB's confidence (0–100) that this IP is malicious, based on community reports. 50+ is high, 100 is certain.") +
          kvrow("Total reports", a.totalReports||0, "", "How many times this IP was reported to AbuseIPDB in the last 90 days.") +
@@ -705,6 +747,7 @@ function abuseBlock(a) {
 }
 function otxBlock(o) {
   if (!o) return muted(keyOn('otx') ? 'OTX returned no data (endpoint may be slow or rate-limited — retry).' : 'Set OTX_API_KEY to enable AlienVault OTX.');
+  if (isErr(o)) return failNote(o);
   if (!o.pulse_count) return kvrow("Threat reports", "0", "good") + '<div class="muted" style="font-size:11px;margin-top:6px">No community threat reports reference this indicator.</div>';
   return kvrow("Threat reports", o.pulse_count, "bad") +
     (o.malware_families && o.malware_families.length ? kvrow("Malware", o.malware_families.join(", "), "bad") : "") +
@@ -720,14 +763,17 @@ function threatFeedsBlock(d) {
   let html = "";
   // Google Safe Browsing
   if (!gsb) html += kvrow("Safe Browsing", keyOn('gsb') ? "unavailable" : "set GSB_API_KEY", "");
+  else if (isErr(gsb)) html += failRow("Safe Browsing", gsb);
   else if (gsb.flagged) html += kvrow("Safe Browsing", (gsb.threats || []).join(", ") || "FLAGGED", "bad");
   else html += kvrow("Safe Browsing", "clean", "good");
   // ThreatFox
   if (!tf) html += kvrow("ThreatFox", keyOn('abusech') ? "unavailable" : "set ABUSECH_API_KEY", "");
+  else if (isErr(tf)) html += failRow("ThreatFox", tf);
   else if (tf.found) html += kvrow("ThreatFox", (plat ? "malware hosted here" : "KNOWN IOC") + (tf.malware && tf.malware.length ? " · " + tf.malware.join(", ") : ""), plat ? "warn" : "bad", plat ? platTip : "");
   else html += kvrow("ThreatFox", "no match", "good");
   // URLhaus
   if (!uh) html += kvrow("URLhaus", keyOn('abusech') ? "unavailable" : "set ABUSECH_API_KEY", "");
+  else if (isErr(uh)) html += failRow("URLhaus", uh);
   else if (uh.found) html += kvrow("URLhaus", (plat ? "malware hosted here · " : "MALWARE HOST · ") + (uh.url_count || 0) + " URLs", plat ? "warn" : "bad", plat ? platTip : "");
   else html += kvrow("URLhaus", "no match", "good");
   return html;
@@ -737,14 +783,16 @@ function ipRepBlock(d) {
   if (!d.ip) return '<pre class="muted">No resolved IP</pre>';
   const gn = d.greynoise, s = d.shodan;
   let html = "";
-  if (gn && gn.observed) {
+  if (isErr(gn)) html += failRow("GreyNoise", gn);
+  else if (gn && gn.observed) {
     const cls = gn.classification || "unknown";
     html += kvrow("GreyNoise", cls + (gn.name ? " · " + gn.name : ""), cls === "malicious" ? "bad" : (cls === "benign" ? "good" : "warn"));
     if (gn.last_seen) html += kvrow("Last seen", gn.last_seen);
   } else {
     html += kvrow("GreyNoise", gn ? "not observed scanning" : "—");
   }
-  if (s) {
+  if (isErr(s)) html += failRow("Shodan", s);
+  else if (s) {
     html += kvrow("Open ports", (s.ports && s.ports.length) ? s.ports.join(", ") : "none seen");
     if (s.vulns && s.vulns.length) html += kvrow("CVEs", s.vulns.slice(0, 8).join(", "), "warn");
     if (s.tags && s.tags.length) html += kvrow("Shodan tags", s.tags.join(", "));
@@ -768,6 +816,7 @@ function ipAbuseKinds(d) {
 function ipqsBlock(d) {
   const q = d.ipqs;
   if (!q) return muted(keyOn('ipqs') ? 'No IPQualityScore data for this IP.' : 'Set IPQS_API_KEY to enable IPQualityScore.');
+  if (isErr(q)) return failNote(q) + (/quota/.test(q.error) ? muted("IPQS free tier is 5,000 lookups/month and resets monthly.") : "");
   const fs = q.fraud_score || 0;
   // Fuller anonymizer detail — IPQS flags proxy/vpn/tor separately, with an 'active' (live tunnel) state.
   const kinds = [];
@@ -796,7 +845,8 @@ function emailRepBlock(d) {
   if (!dis && !iq && !e && !hr && !xon) return '<pre class="muted">No email reputation data available.</pre>';
   let html = "";
   // --- address reputation: infostealer + breach exposure ---
-  if (hr) {
+  if (isErr(hr)) html += failRow("Infostealer exposure", hr);
+  else if (hr) {
     if (hr.compromised) {
       html += kvrow("Infostealer exposure", "COMPROMISED — in stealer logs", "bad",
         "This exact address was found in infostealer-malware logs: a device using it was infected and its saved passwords were stolen. The account may be hijacked (account-takeover risk).") +
@@ -807,7 +857,8 @@ function emailRepBlock(d) {
         "Checks Hudson Rock's infostealer-malware database for this exact address. 'Clean' means it hasn't appeared in known credential-theft logs.");
     }
   }
-  if (xon) {
+  if (isErr(xon)) html += failRow("Breach exposure", xon);
+  else if (xon) {
     if (xon.found) {
       html += kvrow("Breach exposure", xon.count + " known breach" + (xon.count === 1 ? "" : "es"), xon.count >= 8 ? "warn" : "",
         "Data breaches this address has appeared in (via XposedOrNot). Breach presence is common for real, long-lived addresses — it's exposure, not proof of malice — but heavy exposure raises phishing / credential-stuffing risk.") +
@@ -831,7 +882,8 @@ function emailRepBlock(d) {
       (sig.length ? kvrow("Signals", sig.join(", "), sig.indexOf("high_entropy") >= 0 ? "warn" : "") : "");
   }
   // IPQualityScore (optional, if key)
-  if (iq) {
+  if (isErr(iq)) html += failRow("IPQualityScore", iq);
+  else if (iq) {
     if (dis) html += '<div class="muted" style="font-size:11px;margin-top:10px;margin-bottom:4px">IPQualityScore</div>';
     const fs = iq.fraud_score || 0;
     html += kvrow("Fraud score", fs + "/100", fs >= 85 ? "bad" : (fs >= 60 ? "warn" : "good")) +
@@ -893,6 +945,7 @@ function staleScanNote(t) {
 }
 
 function urlscanBlock(u) {
+  if (isErr(u)) return '<div class="muted" style="margin-bottom:16px">⚠ urlscan search unavailable — ' + esc(u.error) + '. A live scan below may still work.</div>' + liveBtn('▶ Run live scan');
   if (!u || !u.results || !u.results.length) {
     return '<div class="muted" style="margin-bottom:16px">No prior urlscan submissions for this target. Run a fresh scan to capture a live screenshot and detect redirects.</div>' +
            liveBtn('▶ Run live scan');
@@ -1042,6 +1095,18 @@ function selectTicket(fmt) {
 }
 
 function recAction(d) {
+  const missing = srcErrNames(d);
+  if (d.verdict === "Inconclusive")
+    return "Do NOT release, allow or close on this result — the lookup was incomplete (" + missing.join("; ") +
+      "). Hold/quarantine for now; re-run shortly or check the missing sources directly.";
+  const a = recActionCore(d);
+  if (missing.length && (d.verdict === "Likely Legitimate" || d.verdict === "Low–Moderate"))
+    return "Caution — " + missing.length + " source" + (missing.length === 1 ? "" : "s") + " didn't respond (" +
+      missing.join("; ") + "), so confirm before acting. " + a;
+  return a;
+}
+
+function recActionCore(d) {
   if (d.unresolved) return "No action needed on the name itself — it has no DNS records and does not resolve (appears unregistered or inactive). If it was expected to be live, double-check the spelling. If a message claimed to come from it, treat that claim as forged: the domain cannot send or receive mail.";
   if (d.kind === "hash") return ({
     "Likely Malicious": "Block this hash in EDR (CrowdStrike Falcon); hunt for the file across endpoints; quarantine/purge any email carrying it (Mimecast).",
@@ -1085,6 +1150,13 @@ function stampUTC() {
 // Evidence trail: every source consulted and what it said. A clean source is recorded explicitly so a
 // reviewer can tell it was checked and came back empty — not silently skipped.
 function evidence(d) {
+  // a source that errored goes under "No data" with the reason — never "No hits"
+  const failed = {};
+  (d.source_errors || []).forEach(e => { failed[e.source] = e.error; });
+  return evidenceRaw(d).map(e => failed[e.name] ? { name: e.name, status: "na", detail: failed[e.name] } : e);
+}
+
+function evidenceRaw(d) {
   const out = [];
   const add = (name, status, detail) => out.push({ name: name, status: status, detail: detail || "" });
   const vtStat = v => {
@@ -1206,7 +1278,7 @@ function fmtSecurityCIDR(d) {
   L.push("SECURITY TEAM — NETWORK BLOCK REPORT");
   L.push("");
   L.push("IOC:      " + d.defanged + "  (network block)");
-  L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  L.push("Verdict:  " + d.verdict + riskTag(d));
   L.push("Analyzed: " + stampUTC());
   if (d.drop && d.drop.listed) L.push("Spamhaus: DROP-LISTED — criminal netblock (" + (d.drop.sblid || "") + ")");
   else if (d.drop) L.push("Spamhaus: not on DROP list");
@@ -1234,7 +1306,7 @@ function fmtSecurityHash(d) {
   L.push("SECURITY TEAM — FILE HASH REPORT");
   L.push("");
   L.push("IOC:      " + d.hash + "  (" + (d.hash_type || "hash") + ")");
-  L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  L.push("Verdict:  " + d.verdict + riskTag(d));
   L.push("Analyzed: " + stampUTC());
   if (v.found) {
     const s = v.last_analysis_stats || {}, total = Object.values(s).reduce((a, b) => a + b, 0) || 0;
@@ -1263,7 +1335,7 @@ function fmtSecurity(d) {
   L.push("SECURITY TEAM — TRIAGE REPORT");
   L.push("");
   L.push("IOC:      " + d.defanged + "  (" + d.kind + ")");
-  L.push("Verdict:  " + d.verdict + (d.unresolved ? "" : "  (risk " + d.score + "/100)"));
+  L.push("Verdict:  " + d.verdict + riskTag(d));
   L.push("Analyzed: " + stampUTC());
   if (d.unresolved) {
     L.push("DNS:      no records (no A / MX / NS); no registration found");
@@ -1292,7 +1364,7 @@ function fmtSecurityIP(d) {
   L.push("SECURITY TEAM — IP TRIAGE REPORT");
   L.push("");
   L.push("IOC:      " + d.defanged + "  (ip)");
-  L.push("Verdict:  " + d.verdict + "  (risk " + d.score + "/100)");
+  L.push("Verdict:  " + d.verdict + riskTag(d));
   L.push("Analyzed: " + stampUTC());
   L.push("Network:  " + (i.as || (vt.asn ? "AS" + vt.asn : "?")) + "  ·  " + (i.country || "?") + "  ·  " + (i.isp || i.org || vt.as_owner || "?"));
   if (rip.name || rip.cidr) L.push("Alloc:    " + (rip.name || "?") + (rip.cidr ? "  " + rip.cidr : ""));
@@ -1422,7 +1494,8 @@ function stakeholderPoints(d) {
 function riskRating(d) {
   return ({
     "Likely Malicious": "HIGH", "Suspicious": "ELEVATED",
-    "Low–Moderate": "LOW–MODERATE", "Likely Legitimate": "LOW", "No DNS Record": "N/A"
+    "Low–Moderate": "LOW–MODERATE", "Likely Legitimate": "LOW", "No DNS Record": "N/A",
+    "Inconclusive": "UNKNOWN (incomplete lookup)"
   })[d.verdict] || "UNKNOWN";
 }
 
@@ -1451,7 +1524,7 @@ function fmtExecutive(d) {
     "Suspicious": "This domain shows warning signs and should be treated with caution pending a brief investigation.",
     "Low–Moderate": "This domain carries limited risk. Normal precautions and monitoring are sufficient.",
     "Likely Legitimate": "This domain appears legitimate and poses no significant risk to the organization at this time."
-  })[d.verdict] || (d.unresolved ? "This name has no DNS records and does not resolve — it appears unregistered or inactive, and cannot host a website or send/receive mail." : "Manual review required.");
+  })[d.verdict] || (d.unresolved ? "This name has no DNS records and does not resolve — it appears unregistered or inactive, and cannot host a website or send/receive mail." : d.verdict === "Inconclusive" ? "Not enough evidence to assess this asset — key intelligence sources didn't respond at the time of the check. It should not be treated as safe until re-checked." : "Manual review required.");
   const decision = (hash ? {
     "Likely Malicious": "Authorize blocking the hash in EDR and purging any email carrying the file.",
     "Suspicious": "Approve sandbox analysis and containment before the file is used.",
@@ -1472,13 +1545,13 @@ function fmtExecutive(d) {
     "Suspicious": "Approve quarantine and a short investigation before any release.",
     "Low–Moderate": "No immediate action; continue routine monitoring.",
     "Likely Legitimate": "No action required."
-  })[d.verdict] || (d.unresolved ? "No action required on the name itself; verify the spelling if it was expected to be live, and treat any mail claiming to be from it as forged." : "Defer to the security team.");
+  })[d.verdict] || (d.unresolved ? "No action required on the name itself; verify the spelling if it was expected to be live, and treat any mail claiming to be from it as forged." : d.verdict === "Inconclusive" ? "Hold any release or allow decision until the check is re-run with full data." : "Defer to the security team.");
 
   const L = [];
   L.push("EXECUTIVE SECURITY BRIEF");
   L.push("");
   L.push("Asset reviewed: " + d.defanged + " (" + d.kind + ")");
-  L.push("Risk rating:    " + riskRating(d) + " — " + d.verdict + " (" + d.score + "/100)");
+  L.push("Risk rating:    " + riskRating(d) + " — " + d.verdict + riskTag(d));
   L.push("Assessed:       " + stampUTC() + "  (threat intel is time-sensitive — re-check if acting later)");
   L.push("");
   L.push("Bottom line:");
@@ -1491,19 +1564,22 @@ function fmtExecutive(d) {
   L.push("");
   const srcNames = evidence(d).filter(e => e.status !== "na").map(e => e.name);
   if (srcNames.length) L.push("Basis: " + srcNames.length + " independent sources checked (" + srcNames.join(", ") + ").");
+  const missing = srcErrNames(d);
+  if (missing.length) L.push("Not available at time of assessment: " + missing.join("; ") + ".");
   L.push("Prepared by SC4N automated triage · " + stampUTC());
   return L.join("\n");
 }
 
 // End User — plain guidance for non-technical staff
 function fmtEndUser(d) {
-  const danger = d.verdict === "Likely Malicious" || d.verdict === "Suspicious";
+  // an incomplete check must never tell a user it's fine to proceed
+  const danger = d.verdict === "Likely Malicious" || d.verdict === "Suspicious" || d.verdict === "Inconclusive";
   const result = ({
     "Likely Malicious": "⚠ This looks DANGEROUS — do not interact with it.",
     "Suspicious": "⚠ This looks SUSPICIOUS — be very careful.",
     "Low–Moderate": "This is probably okay, but stay alert.",
     "Likely Legitimate": "✓ This looks SAFE."
-  })[d.verdict] || (d.unresolved ? "This name doesn't exist online — it has no records at all." : "Unable to determine — check with IT Security.");
+  })[d.verdict] || (d.unresolved ? "This name doesn't exist online — it has no records at all." : d.verdict === "Inconclusive" ? "We couldn't finish checking this — don't open or click it yet, and check with IT Security." : "Unable to determine — check with IT Security.");
   if (d.unresolved) {
     return ["IS THIS SAFE?", "", "We checked: " + d.defanged, "", "Result: " + result, "",
       "In plain terms: This web/email name isn't set up on the internet — there's nothing there. It can't host a real website or send or receive email.",
