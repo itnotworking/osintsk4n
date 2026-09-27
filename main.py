@@ -3,6 +3,7 @@ osintsk4n — FastAPI front door.
 Thin routing layer; all intelligence lives in analyzer.py.
 """
 
+import os
 import re
 import time
 import asyncio
@@ -18,6 +19,8 @@ import analyzer
 app = FastAPI(title="osintsk4n — SOC Triage", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+# changes with every deploy, so browsers fetch the new stylesheet instead of a cached old one
+CSS_VERSION = str(int(os.path.getmtime("static/style.css")))
 
 # --- simple in-memory rate limit (per client IP) ---------------------------
 RATE_LIMIT = 20          # requests
@@ -66,7 +69,7 @@ async def security_headers(request: Request, call_next):
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse("index.html", {"request": request, "css_v": CSS_VERSION})
 
 
 @app.get("/health")
