@@ -435,7 +435,7 @@ function cards(d) {
 
   // tenant on a shared host: the platform's age/registrar below is NOT this site's
   if (!d.unresolved && d.is_tenant && d.tenant_note)
-    out.push(card("About this site", '<pre class="warn-note" style="white-space:pre-wrap;margin:0">' + esc(d.tenant_note) + '</pre>'));
+    out.push(card("About this site", '<pre class="ruled-note" style="white-space:pre-wrap;margin:0">' + esc(d.tenant_note) + '</pre>'));
 
   // consumer-provider context: domain intel is about the provider, not the mailbox
   const provider = !!d.is_provider;
@@ -1039,8 +1039,10 @@ function staleScanNote(t) {
   if (isNaN(d.getTime())) return "";
   const days = Math.floor((Date.now() - d.getTime()) / 86400000);
   if (days < 30) return "";
-  return '<div class="stale-note">↻ Newest urlscan is <b>' + days + ' days old</b> (' +
-    esc((t || "").slice(0, 10)) + '). The site may have changed — run a fresh scan below for current results.</div>';
+  return '<div class="stale-note">' +
+    '<div class="sn-age"><b>' + days + '</b><span>days old</span></div>' +
+    '<div class="sn-text">Newest scan is from <b>' + esc((t || "").slice(0, 10)) + '</b>. The site may have changed since — ' +
+    'run a fresh scan below for current results.</div></div>';
 }
 
 function urlscanBlock(u) {

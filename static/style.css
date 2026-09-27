@@ -371,14 +371,18 @@ a:hover { color: #b9c0f0; text-decoration: underline; }
 .us-shot.danger img { border-color: var(--crit); box-shadow: 0 0 0 1px rgba(233,106,106,0.35); }
 .us-shot.danger .us-cap { color: #e89595; }
 
-/* ---- stale-scan reminder ---- */
-.stale-note {
-  font-size: 12.5px; color: var(--warn); line-height: 1.55;
-  margin: 0 0 16px; padding: 9px 13px;
-  border: 1px solid rgba(212,162,74,0.32); border-left: 3px solid var(--warn);
-  border-radius: 7px; background: rgba(212,162,74,0.07);
+/* ---- stale-scan reminder: the age as a figure (like the clocks / coverage count), a rule, then the why ---- */
+.stale-note { display: flex; align-items: center; gap: 16px; margin: 0 0 20px; }
+.sn-age { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-start; line-height: 1; }
+.sn-age b { font-size: 24px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.sn-age span { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--faint); margin-top: 5px; }
+.sn-text {
+  font-size: 12.5px; line-height: 1.6; color: var(--muted);
+  padding-left: 16px; border-left: 2px solid var(--divider);
 }
-.stale-note b { color: var(--warn); font-weight: 700; }
+.sn-text b { color: var(--text); font-weight: 600; }
+/* a note that needs setting apart without an alarm colour */
+.ruled-note { color: var(--text); line-height: 1.6; padding-left: 12px; border-left: 2px solid var(--divider); }
 .muted { color: var(--muted); }
 /* ---- source coverage rail: one segment per core source, solid = answered, hatched = no answer ---- */
 .coverage { padding: 22px 0 24px; border-top: 2px solid var(--divider); }
@@ -417,7 +421,6 @@ a:hover { color: #b9c0f0; text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) { .cv-seg { animation: none; } }
 #status .cached { color: var(--muted); }
 #status .refresh { color: var(--accent); }
-.warn-note { color: var(--warn); line-height: 1.6; }
 .hidden { display: none; }
 .fade-in { animation: fadeIn .25s ease forwards; }
 @keyframes fadeIn { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
