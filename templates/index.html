@@ -275,17 +275,17 @@ function verdictBanner(d) {
 // IP summary: what it is, why flagged, what to do
 function ipBrief(d) {
   const i = d.info || {}, ab = d.abuse || {}, vt = d.vt || {}, otx = d.otx || {},
-        gn = d.greynoise || {}, sh = d.shodan || {}, rip = d.rdap_ip || {}, iq = d.ipqs || {};
+        pc = d.proxycheck || {}, bl = d.blocklists || {}, sh = d.shodan || {}, rip = d.rdap_ip || {}, iq = d.ipqs || {};
   const stats = vt.last_analysis_stats || {};
   const owner = i.isp || i.org || vt.as_owner || ab.isp || iq.isp || rip.name || null;
   const usage = (ab.usageType || "").toLowerCase();
   const hosting = i.hosting || /data ?cent|hosting|server|transit|colo/.test(usage) || /data ?center/i.test(iq.connection_type || "");
-  const anon = i.proxy || ab.isTor || iq.proxy || iq.vpn || iq.tor || /proxy|vpn|tor/.test(usage);
+  const anon = i.proxy || ab.isTor || iq.proxy || iq.vpn || iq.tor || pc.proxy || /proxy|vpn|tor/.test(usage);
 
   // what it is
   let s1 = "This is " + (hosting ? "a data-center / hosting IP" : "an IP") + (owner ? " operated by " + owner : "");
-  if (ab.isTor || iq.active_tor) s1 += ", running as a Tor exit node";
-  else if (iq.active_vpn) s1 += ", operating as an active VPN endpoint";
+  if (ab.isTor || iq.active_tor || bl.tor_exit || /tor/i.test(pc.type || "")) s1 += ", running as a Tor exit node";
+  else if (iq.active_vpn || /vpn/i.test(pc.type || "")) s1 += ", operating as a VPN endpoint";
   else if (anon) s1 += ", flagged as proxy / VPN / Tor infrastructure";
   s1 += (i.city && (i.countryCode || i.country)) ? " (" + i.city + ", " + (i.countryCode || i.country) + ")." : ".";
 
@@ -303,7 +303,9 @@ function ipBrief(d) {
     why.push(mal + (tot ? " of " + tot : "") + " security vendors flag it malicious");
   }
   if (iq.bot_status) why.push("IPQS sees automated bot activity from it");
-  if (gn.observed && gn.classification === "malicious") why.push("GreyNoise has caught it scanning the internet");
+  if ((bl.ipsum_count || 0) >= 3) why.push("it appears on " + bl.ipsum_count + " public blocklists");
+  if ((pc.attacks || 0) > 0) why.push("proxycheck.io honeypots logged " + pc.attacks + " attack" + (pc.attacks === 1 ? "" : "s") + " from it" +
+    (Object.keys(pc.attack_types || {}).length ? " (" + Object.keys(pc.attack_types).slice(0, 2).join(", ").toLowerCase() + ")" : ""));
   if ((otx.pulse_count || 0) > 0) {
     const tg = (otx.tags || []).filter(t => /honeypot|honeynet|malware|c2|botnet|scan|brute|phish|exploit|rat|trojan|spam/i.test(t)).slice(0, 2);
     const named = (otx.malware_families || []).concat(otx.adversaries || []).slice(0, 2);
@@ -640,7 +642,10 @@ function ipCards(d) {
   // IPQualityScore — fraud / proxy / VPN / bot
   out.push(card("Fraud & Proxy (IPQS)", ipqsBlock(d)));
 
-  // IP reputation & exposure (GreyNoise + Shodan)
+  // proxycheck.io — anonymizer type, risk, honeypot attack history
+  out.push(card("Proxy & Attacks (proxycheck.io)", proxycheckBlock(d)));
+
+  // IP reputation & exposure (public blocklists + Shodan)
   out.push(card("Reputation & Exposure", ipRepBlock(d)));
 
   // Passive DNS (VT resolutions)
@@ -791,15 +796,17 @@ function threatFeedsBlock(d) {
 
 function ipRepBlock(d) {
   if (!d.ip) return '<pre class="muted">No resolved IP</pre>';
-  const gn = d.greynoise, s = d.shodan;
+  const bl = d.blocklists, s = d.shodan;
   let html = "";
-  if (isErr(gn)) html += failRow("GreyNoise", gn);
-  else if (gn && gn.observed) {
-    const cls = gn.classification || "unknown";
-    html += kvrow("GreyNoise", cls + (gn.name ? " · " + gn.name : ""), cls === "malicious" ? "bad" : (cls === "benign" ? "good" : "warn"));
-    if (gn.last_seen) html += kvrow("Last seen", gn.last_seen);
-  } else {
-    html += kvrow("GreyNoise", gn ? "not observed scanning" : "—");
+  if (isErr(bl)) html += failRow("Public blocklists", bl);
+  else if (bl) {
+    const n = bl.ipsum_count;
+    html += kvrow("Public blocklists", n == null ? "unavailable" : (n ? "on " + n + " list" + (n === 1 ? "" : "s") : "not listed"),
+      n == null ? "" : (n >= 3 ? "bad" : (n ? "warn" : "good")),
+      "IPsum merges 30+ public blocklists (scanners, brute-forcers, spam, botnets) daily and counts how many list this IP. 3+ lists is a strong signal; a single listing can be stale." +
+      (bl.list_date ? " Lists updated " + bl.list_date + "." : ""));
+    html += kvrow("Tor exit", bl.tor_exit == null ? "unknown (list unavailable)" : (bl.tor_exit ? "YES" : "no"), bl.tor_exit ? "warn" : "",
+      "Checked against the Tor Project's published exit-node list, refreshed every 6 hours.");
   }
   if (isErr(s)) html += failRow("Shodan", s);
   else if (s) {
@@ -821,6 +828,22 @@ function ipAbuseKinds(d) {
   (otx.adversaries || []).forEach(a => out.push(a));
   if (tf.found && tf.malware) (tf.malware || []).forEach(m => out.push(m));
   return [...new Set(out.filter(Boolean))];
+}
+
+function proxycheckBlock(d) {
+  const p = d.proxycheck;
+  if (!p) return muted(keyOn('proxycheck') ? 'No proxycheck.io data for this IP.' : 'Set PROXYCHECK_API_KEY to enable proxycheck.io.');
+  if (isErr(p)) return failNote(p);
+  const n = p.attacks || 0, r = p.risk || 0;
+  const types = Object.entries(p.attack_types || {}).map(([k, v]) => k + " " + v);
+  return kvrow("Anonymizer", p.proxy ? (p.type || "proxy") : "none detected" + (p.type ? " (" + p.type + ")" : ""), p.proxy ? "warn" : "good",
+      "Whether proxycheck.io sees this IP as a proxy, VPN or Tor node, and the connection type (Business, Residential, Hosting, VPN, TOR…). Anonymizers aren't malicious on their own.") +
+    kvrow("Risk", r + "/100", r >= 67 ? "bad" : (r >= 34 ? "warn" : "good"),
+      "proxycheck.io risk score: 0–33 low, 34–66 elevated, 67+ high. VPN/Tor exits score high by nature — weigh it against attack history.") +
+    kvrow("Attacks seen", n ? n + (types.length ? " — " + types.join(", ") : "") : "none", n >= 5 ? "bad" : (n ? "warn" : "good"),
+      "Attacks this IP made against proxycheck.io's honeypots (login attempts, vulnerability probing, comment spam…). This is observed behaviour, not a reputation guess.") +
+    (p.last_seen ? kvrow("Last seen", p.last_seen) : "") +
+    ((p.provider || p.organisation) ? kvrow("Provider", p.provider || p.organisation) : "");
 }
 
 function ipqsBlock(d) {
@@ -1200,7 +1223,7 @@ function evidenceRaw(d) {
     if (!dr) add("Spamhaus DROP", "na"); else dr.listed ? add("Spamhaus DROP", "hit", dr.sblid || "listed") : add("Spamhaus DROP", "clean", "not listed");
     const b = d.block;
     if (!b) add("AbuseIPDB (block)", "na", keyOn('abuseipdb') ? "no data" : "no API key");
-    else if (b.error) add("AbuseIPDB (block)", "na", "paid feature");
+    else if (b.error) add("AbuseIPDB (block)", "na", b.error);
     else (b.reported_count || 0) > 0 ? add("AbuseIPDB (block)", "hit", b.reported_count + " reported addresses") : add("AbuseIPDB (block)", "clean", "no reported addresses");
     if (d.rdap_ip && (d.rdap_ip.name || d.rdap_ip.org)) add("RDAP", "clean", "allocation confirmed");
     return out;
@@ -1225,10 +1248,17 @@ function evidenceRaw(d) {
     if (!otx) add("AlienVault OTX", "na"); else (otx.pulse_count || 0) > 0 ? add("AlienVault OTX", "hit", otx.pulse_count + " pulses") : add("AlienVault OTX", "clean", "0 pulses");
     const tf = d.threatfox; if (!tf) add("ThreatFox", "na"); else tf.found ? add("ThreatFox", "hit", (tf.malware || []).join(", ")) : add("ThreatFox", "clean", "no match");
     const uh = d.urlhaus; if (!uh) add("URLhaus", "na"); else uh.found ? add("URLhaus", "hit", (uh.url_count || 0) + " malware URLs") : add("URLhaus", "clean", "no match");
-    const gn = d.greynoise;
-    if (!gn) add("GreyNoise", "na");
-    else if (gn.error) add("GreyNoise", "na", gn.error + " (free tier, best-effort)");
-    else (gn.observed && gn.classification === "malicious") ? add("GreyNoise", "hit", "classified malicious") : add("GreyNoise", "clean", gn.observed ? (gn.classification || "observed") : "not observed scanning");
+    const pc = d.proxycheck;
+    if (!pc) add("proxycheck.io", "na", keyOn('proxycheck') ? "no response" : "no API key");
+    else if (pc.error) add("proxycheck.io", "na", pc.error);
+    else (pc.attacks || 0) > 0 ? add("proxycheck.io", "hit", pc.attacks + " honeypot attack(s)" + (pc.type ? ", " + pc.type : ""))
+      : add("proxycheck.io", "clean", "no attacks seen" + (pc.proxy ? ", " + (pc.type || "proxy") : ""));
+    const bl = d.blocklists;
+    if (!bl) add("Public blocklists", "na");
+    else if (bl.error) add("Public blocklists", "na", bl.error);
+    else if (bl.ipsum_count == null) add("Public blocklists", "na", "IPsum unavailable");
+    else bl.ipsum_count > 0 ? add("Public blocklists", "hit", "on " + bl.ipsum_count + " list(s)" + (bl.tor_exit ? ", Tor exit" : ""))
+      : add("Public blocklists", "clean", "not listed" + (bl.tor_exit ? ", Tor exit" : ""));
     const sh = d.shodan;
     if (!sh) add("Shodan", "na");
     else { const np = (sh.ports || []).length; add("Shodan", "clean", np + " open port" + (np === 1 ? "" : "s")); }
@@ -1400,8 +1430,11 @@ function ipPoints(d) {
   if (iq.bot_status) pts.push("IPQualityScore detects automated bot activity from this IP.");
   if (d.threatfox && d.threatfox.found) pts.push("It matches a known malware/command-and-control indicator.");
   if (d.otx && d.otx.pulse_count > 0 && ((d.otx.malware_families || []).length || (d.otx.adversaries || []).length)) pts.push("It is linked to reported threat activity (associated malware or threat actors).");
-  if (ab.isTor || iq.active_tor) pts.push("It is a Tor exit node, which is commonly used to anonymize malicious traffic.");
-  else if (iq.active_vpn) pts.push("It is an active VPN endpoint (anonymized traffic).");
+  const bl = d.blocklists || {}, pc = d.proxycheck || {};
+  if ((bl.ipsum_count || 0) >= 3) pts.push("It appears on " + bl.ipsum_count + " public blocklists of attacking or scanning hosts.");
+  if ((pc.attacks || 0) > 0) pts.push("Honeypots have recorded attacks coming from this IP.");
+  if (ab.isTor || iq.active_tor || bl.tor_exit || /tor/i.test(pc.type || "")) pts.push("It is a Tor exit node, which is commonly used to anonymize malicious traffic.");
+  else if (iq.active_vpn || /vpn/i.test(pc.type || "")) pts.push("It is an active VPN endpoint (anonymized traffic).");
   if (ab.top_categories && ab.top_categories.length) pts.push("Recent abuse reports include: " + ab.top_categories.slice(0, 3).join(", ") + ".");
   if (!pts.length) pts.push("No major threat-intelligence sources flag this IP; its infrastructure and reputation look normal.");
   return pts.slice(0, 5);

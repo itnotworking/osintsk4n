@@ -26,5 +26,5 @@ services:
         sync: false
       - key: TRIAGE_API_KEY
         sync: false
-      - key: GREYNOISE_API_KEY
+      - key: PROXYCHECK_API_KEY
         sync: false

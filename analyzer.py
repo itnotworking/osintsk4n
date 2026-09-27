@@ -38,13 +38,13 @@ EMAILREP_API_KEY = _key("EMAILREP_API_KEY")
 IPQS_API_KEY = _key("IPQS_API_KEY")
 HYBRID_API_KEY = _key("HYBRID_API_KEY")
 TRIAGE_API_KEY = _key("TRIAGE_API_KEY")
-GREYNOISE_API_KEY = _key("GREYNOISE_API_KEY")
+PROXYCHECK_API_KEY = _key("PROXYCHECK_API_KEY")
 
 USER_AGENT = "osintsk4n/2.0 (SOC triage)"
 _executor = ThreadPoolExecutor(max_workers=16)
 
 # Per-source answer cache. Analysts re-query the same IOC many times during one campaign, and every
-# repeat was burning free-tier quota (IPQS, VT, GreyNoise ran dry). Only good answers are cached —
+# repeat was burning free-tier quota (IPQS and VT ran dry). Only good answers are cached —
 # a failed source is retried on the next lookup. "Re-run fresh" purges the entries for that IOC.
 SOURCE_TTL = 1800
 _src_cache = {}
@@ -1187,25 +1187,102 @@ def shodan_internetdb(ip):
             "cpes": data.get("cpes") or []}
 
 
-@_cached
-def greynoise_lookup(ip):
-    """GreyNoise Community (free) — benign scanner vs malicious noise classification.
-    Note: returns HTTP 404 (with a useful JSON body) when an IP hasn't been observed."""
+# Public blocklists, matched locally: no key, no quota, no account to lose. IPsum merges 30+ public
+# blocklists and counts how many list an IP (The Unlicense); the Tor Project publishes exit nodes.
+IPSUM_URL = "https://raw.githubusercontent.com/stamparm/ipsum/master/ipsum.txt"
+TOR_EXITS_URLS = ("https://check.torproject.org/torbulkexitlist",
+                  "https://www.dan.me.uk/torlist/?exit")
+LISTS_TTL = 6 * 3600
+_lists = {"ts": 0.0, "ipsum": {}, "tor": set(), "ipsum_date": None, "error": None}
+_lists_lock = threading.Lock()
+
+
+def _refresh_lists():
+    """Download both lists; keep the previous copy if a download fails."""
+    ipsum, date, tor, errs = None, None, None, []
+    try:
+        r = requests.get(IPSUM_URL, headers={"User-Agent": USER_AGENT}, timeout=30)
+        if r.status_code == 200:
+            ipsum = {}
+            for line in r.text.splitlines():
+                if line.startswith("#"):
+                    if "Last update" in line:
+                        date = line.split(":", 1)[1].strip()
+                    continue
+                parts = line.split()
+                if len(parts) == 2 and parts[1].isdigit():
+                    ipsum[parts[0]] = int(parts[1])
+        else:
+            errs.append(f"IPsum HTTP {r.status_code}")
+    except Exception:
+        errs.append("IPsum unreachable")
+    # Tor Project first; dan.me.uk mirrors the same exit list if torproject.org is filtered
+    for url in TOR_EXITS_URLS:
+        try:
+            r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
+            if r.status_code == 200:
+                tor = {ln.strip() for ln in r.text.splitlines()
+                       if ln.strip() and " " not in ln.strip() and "<" not in ln
+                       and (ln.count(".") == 3 or ":" in ln)} or None
+            if tor:
+                break
+        except Exception:
+            pass
+    if not tor:
+        errs.append("Tor exit list unreachable")
+    if ipsum:
+        _lists["ipsum"], _lists["ipsum_date"] = ipsum, date
+    if tor:
+        _lists["tor"] = tor
+    _lists["error"] = "; ".join(errs) or None
+    # a clean refresh holds for LISTS_TTL; a failed one retries in 35 minutes
+    # (dan.me.uk blocks clients that fetch more often than every 30)
+    _lists["ts"] = time.time() if (ipsum and tor) else time.time() - LISTS_TTL + 2100
+
+
+def blocklist_lookup(ip):
+    """How many public blocklists carry this IP (IPsum), and is it a Tor exit node."""
     if not ip:
         return None
-    headers = {"Accept": "application/json"}
-    if GREYNOISE_API_KEY:
-        headers["key"] = GREYNOISE_API_KEY   # free account key lifts the anonymous daily cap
-    st, data, err = _api(f"https://api.greynoise.io/v3/community/{ip}", headers=headers, timeout=8)
-    if err and st != 404:
-        return {"error": err}
-    if not data:
+    with _lists_lock:
+        if time.time() - _lists["ts"] > LISTS_TTL:
+            _refresh_lists()
+    if not _lists["ipsum"] and not _lists["tor"]:
+        return {"error": _lists["error"] or "blocklists unavailable"}
+    # None (not False) when a list failed to load, so "unknown" never reads as "clean"
+    return {"ipsum_count": _lists["ipsum"].get(ip, 0) if _lists["ipsum"] else None,
+            "tor_exit": (ip in _lists["tor"]) if _lists["tor"] else None,
+            "list_date": _lists["ipsum_date"], "ipsum_size": len(_lists["ipsum"])}
+
+
+# warm the lists at startup so the first lookup doesn't pay for the download
+_executor.submit(lambda: blocklist_lookup("0.0.0.0"))
+
+
+@_cached
+def proxycheck_ip(ip):
+    """proxycheck.io — proxy/VPN/Tor detection, risk score, and attacks seen by its honeypots."""
+    if not ip or not PROXYCHECK_API_KEY:
         return None
-    if data.get("classification"):
-        return {"observed": True, "noise": data.get("noise"), "riot": data.get("riot"),
-                "classification": data.get("classification"), "name": data.get("name"),
-                "last_seen": data.get("last_seen")}
-    return {"observed": False, "message": data.get("message")}
+    st, data, err = _api(f"https://proxycheck.io/v2/{quote(ip)}",
+                         params={"key": PROXYCHECK_API_KEY, "vpn": 1, "asn": 1, "risk": 2, "seen": 1},
+                         timeout=8)
+    if err:
+        return {"error": err}
+    if not data or data.get("status") not in ("ok", "warning"):
+        return {"error": _why(st, data), "detail": str((data or {}).get("message") or "")[:160]}
+    r = data.get(ip) or {}
+    hist = r.get("attack history") or {}
+    return {
+        "proxy": r.get("proxy") == "yes",
+        "type": r.get("type"),
+        "risk": r.get("risk"),
+        "provider": r.get("provider"),
+        "organisation": r.get("organisation"),
+        "attacks": int(hist.get("Total") or 0),
+        "attack_types": {k: v for k, v in hist.items() if k != "Total"},
+        "last_seen": r.get("last seen human"),
+    }
 
 
 @_cached
@@ -1633,9 +1710,26 @@ def score_ip(result):
             pts += 20; reasons.append(f"AlienVault OTX: {otx['pulse_count']} reports ({', '.join(named[:3])})")
         else:
             pts += 8; reasons.append(f"AlienVault OTX: {otx['pulse_count']} community reports")
-    gn = result.get("greynoise")
-    if gn and gn.get("observed") and gn.get("classification") == "malicious":
-        pts += 15; reasons.append("GreyNoise: classified malicious")
+    bl = result.get("blocklists")
+    if bl and not bl.get("error"):
+        n = bl.get("ipsum_count") or 0
+        if n >= 5:
+            pts += 35; reasons.append(f"On {n} public blocklists (IPsum) — actively attacking or scanning")
+        elif n >= 3:
+            pts += 25; reasons.append(f"On {n} public blocklists (IPsum)")
+        elif n >= 1:
+            pts += 10; reasons.append(f"On {n} public blocklist{'s' if n > 1 else ''} (IPsum)")
+        if bl.get("tor_exit") and not (abuse or {}).get("isTor"):
+            pts += 5; reasons.append("Tor exit node (Tor Project list)")
+    # proxycheck: score attacks its honeypots actually saw — being a VPN/proxy isn't malicious on its own
+    pc = result.get("proxycheck")
+    if pc and not pc.get("error"):
+        hits = pc.get("attacks") or 0
+        top = ", ".join(f"{k} {v}" for k, v in sorted((pc.get("attack_types") or {}).items(), key=lambda x: -x[1])[:2])
+        if hits >= 5:
+            pts += 20; reasons.append(f"proxycheck.io honeypots saw {hits} attacks from it" + (f" ({top})" if top else ""))
+        elif hits >= 1:
+            pts += 10; reasons.append(f"proxycheck.io honeypots saw {hits} attack{'s' if hits > 1 else ''}" + (f" ({top})" if top else ""))
     info = result.get("info")
     if info and info.get("status") == "success" and info.get("proxy"):
         pts += 8; reasons.append("Flagged as proxy / VPN / Tor")
@@ -1897,10 +1991,6 @@ def score(result):
             pts += 10
             reasons.append(f"AlienVault OTX: {otx['pulse_count']} community threat reports")
 
-    gn = result.get("greynoise")
-    if gn and gn.get("observed") and gn.get("classification") == "malicious":
-        pts += 15
-        reasons.append("GreyNoise: source IP classified malicious")
 
     # infostealer exposure applies to any address (provider or not) — it's per-mailbox
     hr = result.get("hudsonrock")
@@ -1973,7 +2063,7 @@ SOURCE_LABELS = {
     "vt": "VirusTotal", "vt_file": "VirusTotal", "passive_dns": "VirusTotal passive DNS",
     "abuse": "AbuseIPDB", "ipqs": "IPQualityScore", "otx": "AlienVault OTX",
     "threatfox": "ThreatFox", "urlhaus": "URLhaus", "mb": "MalwareBazaar",
-    "greynoise": "GreyNoise", "shodan": "Shodan", "gsb": "Safe Browsing", "urlscan": "urlscan.io",
+    "proxycheck": "proxycheck.io", "blocklists": "Public blocklists", "shodan": "Shodan", "gsb": "Safe Browsing", "urlscan": "urlscan.io",
     "hybrid": "Hybrid Analysis", "triage": "Hatching Triage",
     "hudsonrock": "Hudson Rock", "xon": "XposedOrNot",
 }
@@ -1981,7 +2071,7 @@ SOURCE_LABELS = {
 # The sources a clean verdict actually rests on, per indicator type.
 CORE_SOURCES = {
     "hash": ("vt_file", "mb", "hybrid", "triage", "threatfox"),
-    "ip": ("vt", "abuse", "ipqs", "otx", "threatfox", "urlhaus"),
+    "ip": ("vt", "abuse", "ipqs", "otx", "threatfox", "urlhaus", "proxycheck", "blocklists"),
     "domain": ("vt", "gsb", "threatfox", "urlhaus", "otx", "urlscan"),
     "email": ("vt", "gsb", "threatfox", "urlhaus", "otx", "ipqs", "hudsonrock", "xon"),
     "provider_email": ("ipqs", "hudsonrock", "xon"),
@@ -1994,7 +2084,7 @@ def _configured(src):
         "vt": VT_API_KEY, "vt_file": VT_API_KEY, "passive_dns": VT_API_KEY,
         "abuse": ABUSEIPDB_API_KEY, "ipqs": IPQS_API_KEY, "gsb": GSB_API_KEY,
         "threatfox": ABUSECH_API_KEY, "urlhaus": ABUSECH_API_KEY, "mb": ABUSECH_API_KEY,
-        "hybrid": HYBRID_API_KEY, "triage": TRIAGE_API_KEY,
+        "hybrid": HYBRID_API_KEY, "triage": TRIAGE_API_KEY, "proxycheck": PROXYCHECK_API_KEY,
     }.get(src, True))
 
 
@@ -2002,7 +2092,7 @@ def _ignored_sources(result):
     """Sources this lookup deliberately doesn't use — their failures can't change the verdict."""
     ign = set()
     if result.get("is_provider"):      # consumer mailbox: only address-level sources matter
-        ign |= {"vt", "abuse", "otx", "gsb", "threatfox", "urlhaus", "greynoise", "shodan", "urlscan"}
+        ign |= {"vt", "abuse", "otx", "gsb", "threatfox", "urlhaus", "shodan", "urlscan"}
     if result.get("is_platform"):      # github.com etc.: feed mentions are reframed as context
         ign |= {"otx", "threatfox", "urlhaus"}
     if result.get("is_tenant"):        # shared host: the IP's reputation is other tenants'
@@ -2013,9 +2103,7 @@ def _ignored_sources(result):
 def _flag_degraded(result):
     """Record which sources failed, and refuse to call something clean when most of the evidence is
     missing — a dead source is absence of data, not evidence of safety."""
-    # GreyNoise free tier is 10 lookups/day per shared egress IP (50/week even with a business key),
-    # so it runs out daily under team use: shown when it answers, never counted as a missing source.
-    ignored = _ignored_sources(result) | {"greynoise"}
+    ignored = _ignored_sources(result)
     errs, seen = [], set()
     for key, label in SOURCE_LABELS.items():
         if key in ignored:
@@ -2079,7 +2167,7 @@ def analyze(raw_input, fresh=False):
         "otx": bool(OTX_API_KEY), "urlscan": bool(URLSCAN_API_KEY),
         "gsb": bool(GSB_API_KEY), "abusech": bool(ABUSECH_API_KEY),
         "hybrid": bool(HYBRID_API_KEY), "triage": bool(TRIAGE_API_KEY),
-        "ipqs": bool(IPQS_API_KEY),
+        "ipqs": bool(IPQS_API_KEY), "proxycheck": bool(PROXYCHECK_API_KEY),
     }
     # oldest reused answer, so the page and the ticket can say how fresh the data really is
     ages = [v.get("_age") for v in result.values() if isinstance(v, dict) and v.get("_age") is not None]
@@ -2138,7 +2226,8 @@ def _analyze_ip(parsed, ip, raw_input):
         "rdap_ip":   _executor.submit(rdap_ip, ip),
         "info":      _executor.submit(ip_info, ip),
         "shodan":    _executor.submit(shodan_internetdb, ip),
-        "greynoise": _executor.submit(greynoise_lookup, ip),
+        "proxycheck": _executor.submit(proxycheck_ip, ip),
+        "blocklists": _executor.submit(blocklist_lookup, ip),
         "threatfox": _executor.submit(threatfox_lookup, ip, ip),
         "urlhaus":   _executor.submit(urlhaus_host, ip),
         "ptr":       _executor.submit(reverse_dns, ip),
@@ -2152,7 +2241,7 @@ def _analyze_ip(parsed, ip, raw_input):
         "defanged": defang(parsed["normalized"]),
         "vt": res["vt"], "abuse": res["abuse"], "otx": res["otx"],
         "rdap_ip": res["rdap_ip"], "info": res["info"],
-        "shodan": res["shodan"], "greynoise": res["greynoise"],
+        "shodan": res["shodan"], "proxycheck": res["proxycheck"], "blocklists": res["blocklists"],
         "threatfox": res["threatfox"], "urlhaus": res["urlhaus"],
         "ptr": res["ptr"], "passive_dns": res["passive"], "ipqs": res["ipqs"],
     }
@@ -2210,7 +2299,6 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "threatfox": _executor.submit(threatfox_lookup, domain, reg_or_host),
         "urlhaus": _executor.submit(urlhaus_host, domain),
         "shodan": _executor.submit(shodan_internetdb, ip),
-        "greynoise": _executor.submit(greynoise_lookup, ip),
         "gsb":   _executor.submit(safebrowsing, parsed["url"] or f"https://{domain}"),
         "emailrep": _executor.submit(emailrep_lookup, parsed["email"]),
         "ipqs":  _executor.submit(ipqs_email, parsed["email"]),
@@ -2262,7 +2350,7 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "dkim": res["dkim"],
         "otx": res["otx"], "threatfox": res["threatfox"],
         "urlhaus": res["urlhaus"], "shodan": res["shodan"],
-        "greynoise": res["greynoise"], "gsb": res["gsb"],
+        "gsb": res["gsb"],
         "emailrep": res["emailrep"], "ipqs": res["ipqs"], "disify": res["disify"],
         "hudsonrock": res["hudsonrock"], "xon": res["xon"],
         # derived
