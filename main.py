@@ -80,7 +80,7 @@ async def health():
 
 
 @app.post("/analyze", response_class=JSONResponse)
-async def analyze(request: Request, target: str = Form(...)):
+async def analyze(request: Request, target: str = Form(...), fresh: str = Form("")):
     ip = _client_ip(request)
     if not _rate_ok(ip):
         return JSONResponse(
@@ -91,7 +91,7 @@ async def analyze(request: Request, target: str = Form(...)):
         return JSONResponse({"ok": False, "error": "Invalid input."}, status_code=400)
 
     try:
-        result = await asyncio.to_thread(analyzer.analyze, target)
+        result = await asyncio.to_thread(analyzer.analyze, target, fresh == "1")
     except Exception:
         # keep errors as JSON so the UI can render them
         return JSONResponse(

@@ -9,9 +9,12 @@ Pure stdlib + requests so it cold-starts cleanly on Render's free tier.
 
 import os
 import re
+import copy
 import json
 import time
 import socket
+import functools
+import threading
 import ipaddress
 import datetime as dt
 from urllib.parse import urlparse, quote
@@ -19,19 +22,65 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-VT_API_KEY = os.environ.get("VT_API_KEY", "")
-ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
-URLSCAN_API_KEY = os.environ.get("URLSCAN_API_KEY", "")
-OTX_API_KEY = os.environ.get("OTX_API_KEY", "")
-ABUSECH_API_KEY = os.environ.get("ABUSECH_API_KEY", "")
-GSB_API_KEY = os.environ.get("GSB_API_KEY", "")
-EMAILREP_API_KEY = os.environ.get("EMAILREP_API_KEY", "")
-IPQS_API_KEY = os.environ.get("IPQS_API_KEY", "")
-HYBRID_API_KEY = os.environ.get("HYBRID_API_KEY", "")
-TRIAGE_API_KEY = os.environ.get("TRIAGE_API_KEY", "")
+def _key(name):
+    # keys pasted into a dashboard often pick up stray whitespace, newlines or quotes — the API then
+    # rejects them as unknown, which looks exactly like a revoked key
+    return os.environ.get(name, "").strip().strip('"').strip("'").strip()
+
+
+VT_API_KEY = _key("VT_API_KEY")
+ABUSEIPDB_API_KEY = _key("ABUSEIPDB_API_KEY")
+URLSCAN_API_KEY = _key("URLSCAN_API_KEY")
+OTX_API_KEY = _key("OTX_API_KEY")
+ABUSECH_API_KEY = _key("ABUSECH_API_KEY")
+GSB_API_KEY = _key("GSB_API_KEY")
+EMAILREP_API_KEY = _key("EMAILREP_API_KEY")
+IPQS_API_KEY = _key("IPQS_API_KEY")
+HYBRID_API_KEY = _key("HYBRID_API_KEY")
+TRIAGE_API_KEY = _key("TRIAGE_API_KEY")
+GREYNOISE_API_KEY = _key("GREYNOISE_API_KEY")
 
 USER_AGENT = "osintsk4n/2.0 (SOC triage)"
 _executor = ThreadPoolExecutor(max_workers=16)
+
+# Per-source answer cache. Analysts re-query the same IOC many times during one campaign, and every
+# repeat was burning free-tier quota (IPQS, VT, GreyNoise ran dry). Only good answers are cached —
+# a failed source is retried on the next lookup. "Re-run fresh" purges the entries for that IOC.
+SOURCE_TTL = 1800
+_src_cache = {}
+_src_lock = threading.Lock()
+
+
+def _cached(fn):
+    @functools.wraps(fn)
+    def wrap(*args, **kw):
+        k = (fn.__name__, args, tuple(sorted(kw.items())))
+        now = time.time()
+        with _src_lock:
+            hit = _src_cache.get(k)
+        if hit and now - hit[0] < SOURCE_TTL:
+            v = copy.deepcopy(hit[1])
+            v["_age"] = int(now - hit[0])
+            return v
+        v = fn(*args, **kw)
+        if isinstance(v, dict) and not v.get("error"):
+            with _src_lock:
+                _src_cache[k] = (now, copy.deepcopy(v))
+                if len(_src_cache) > 4000:
+                    for old in sorted(_src_cache, key=lambda x: _src_cache[x][0])[:1000]:
+                        _src_cache.pop(old, None)
+        return v
+    return wrap
+
+
+def _purge_cache(values):
+    """Drop cached answers that mention any of these indicator strings (used by 'Re-run fresh')."""
+    vals = {v for v in values if isinstance(v, str) and v}
+    with _src_lock:
+        stale = [k for k in _src_cache
+                 if any(isinstance(a, str) and any(v in a for v in vals) for a in k[1])]
+        for k in stale:
+            _src_cache.pop(k, None)
 
 # --------------------------------------------------------------------------
 # Reference data
@@ -420,6 +469,7 @@ def ip_info(ip):
     )
 
 
+@_cached
 def check_vt_domain(domain):
     if not VT_API_KEY:
         return None
@@ -442,6 +492,7 @@ ABUSE_CATEGORIES = {
 }
 
 
+@_cached
 def abuseipdb(ip, verbose=False):
     """AbuseIPDB /check. verbose=True also returns recent report detail so we can
     surface the top abuse categories the IP has been reported for."""
@@ -561,6 +612,7 @@ def abuseipdb_block(cidr):
     }
 
 
+@_cached
 def check_vt_file(file_hash):
     """VirusTotal file endpoint — detection ratio, malware family, type, names, first seen."""
     if not file_hash or not VT_API_KEY:
@@ -597,6 +649,7 @@ def check_vt_file(file_hash):
     }
 
 
+@_cached
 def hybrid_analysis(file_hash):
     """Hybrid Analysis (Falcon Sandbox) — sandbox verdict/threat score/family for a hash."""
     if not file_hash or not HYBRID_API_KEY:
@@ -641,6 +694,7 @@ def hybrid_analysis(file_hash):
     }
 
 
+@_cached
 def triage_lookup(file_hash):
     """Hatching Triage (tria.ge) — sandbox score/family/tags for a hash."""
     if not file_hash or not TRIAGE_API_KEY:
@@ -674,6 +728,7 @@ def triage_lookup(file_hash):
     }
 
 
+@_cached
 def malwarebazaar(file_hash):
     """abuse.ch MalwareBazaar — known malware sample lookup (family, tags, delivery)."""
     if not file_hash:
@@ -704,6 +759,7 @@ def malwarebazaar(file_hash):
     }
 
 
+@_cached
 def check_vt_ip(ip):
     """VirusTotal IP-address endpoint — reputation, ASN/owner, country, network."""
     if not ip or not VT_API_KEY:
@@ -732,6 +788,7 @@ def rdap_domain(domain):
     return safe_get(f"https://rdap.org/domain/{domain}")
 
 
+@_cached
 def urlscan_search(domain):
     """urlscan search + verdict for the most recent scan of this domain."""
     headers = {"API-Key": URLSCAN_API_KEY} if URLSCAN_API_KEY else None
@@ -863,6 +920,7 @@ def scan_url_for(raw_input):
 # Threat-intel enrichment (history + actor correlation)
 # --------------------------------------------------------------------------
 
+@_cached
 def otx_lookup(domain):
     """AlienVault OTX — community 'pulses' tying an indicator to campaigns/actors/malware."""
     if not domain:
@@ -899,6 +957,7 @@ def otx_lookup(domain):
     }
 
 
+@_cached
 def otx_ip(ip):
     """OTX IPv4 — threat pulses (actors/malware). (passive DNS comes from VT — more reliable)"""
     if not ip:
@@ -941,6 +1000,7 @@ def _epoch_to_date(ts):
         return ""
 
 
+@_cached
 def vt_ip_resolutions(ip):
     """Passive DNS via VirusTotal — domains that have resolved to this IP (uses VT key)."""
     if not ip or not VT_API_KEY:
@@ -1031,6 +1091,7 @@ def _ioc_host(value):
     return v
 
 
+@_cached
 def threatfox_lookup(ioc, registrable=None):
     """abuse.ch ThreatFox — is this EXACT host a known malware/C2 IOC?
     ThreatFox search is substring-ish, so we filter to exact-host matches to avoid
@@ -1072,6 +1133,7 @@ def threatfox_lookup(ioc, registrable=None):
             "confidence": rows[0].get("confidence_level")}
 
 
+@_cached
 def urlhaus_host(host):
     """abuse.ch URLhaus — known malware-distribution host lookup."""
     if not host:
@@ -1094,6 +1156,7 @@ def urlhaus_host(host):
             "urls": [u.get("url") for u in urls[:5] if u.get("url")]}
 
 
+@_cached
 def shodan_internetdb(ip):
     """Shodan InternetDB (free, no key) — open ports, CVEs, tags for an IP."""
     if not ip:
@@ -1110,13 +1173,16 @@ def shodan_internetdb(ip):
             "cpes": data.get("cpes") or []}
 
 
+@_cached
 def greynoise_lookup(ip):
     """GreyNoise Community (free) — benign scanner vs malicious noise classification.
     Note: returns HTTP 404 (with a useful JSON body) when an IP hasn't been observed."""
     if not ip:
         return None
-    st, data, err = _api(f"https://api.greynoise.io/v3/community/{ip}",
-                         headers={"Accept": "application/json"}, timeout=8)
+    headers = {"Accept": "application/json"}
+    if GREYNOISE_API_KEY:
+        headers["key"] = GREYNOISE_API_KEY   # free account key lifts the anonymous daily cap
+    st, data, err = _api(f"https://api.greynoise.io/v3/community/{ip}", headers=headers, timeout=8)
     if err and st != 404:
         return {"error": err}
     if not data:
@@ -1128,6 +1194,7 @@ def greynoise_lookup(ip):
     return {"observed": False, "message": data.get("message")}
 
 
+@_cached
 def safebrowsing(url):
     """Google Safe Browsing — authoritative malware/phishing verdict for a URL."""
     if not GSB_API_KEY or not url:
@@ -1152,6 +1219,7 @@ def safebrowsing(url):
     return {"flagged": True, "threats": sorted({m.get("threatType") for m in matches if m.get("threatType")})}
 
 
+@_cached
 def ipqs_email(email):
     """IPQualityScore — email fraud/reputation (fraud score, abuse, breach leak, disposable…)."""
     if not email or not IPQS_API_KEY:
@@ -1185,6 +1253,7 @@ def ipqs_email(email):
     }
 
 
+@_cached
 def ipqs_ip(ip):
     """IPQualityScore — IP fraud/proxy reputation (fraud score, VPN/Tor, bot, abuse velocity)."""
     if not ip or not IPQS_API_KEY:
@@ -1239,6 +1308,7 @@ def disify_email(email):
     }
 
 
+@_cached
 def hudsonrock_email(email):
     """Hudson Rock Cavalier (free, no key, no signup) — is this exact address in infostealer malware
     logs? A hit means a machine that used this address was infected and its saved credentials were
@@ -1267,6 +1337,7 @@ def hudsonrock_email(email):
     }
 
 
+@_cached
 def xposedornot_email(email):
     """XposedOrNot (free, no key, no signup) — which known data breaches this address appears in.
     Exposure ≠ malicious (most real, long-lived addresses appear in some breach), so this is reported
@@ -1931,7 +2002,7 @@ def _flag_degraded(result):
                              f"not enough evidence to call this clean"] + (result.get("reasons") or [])
 
 
-def analyze(raw_input):
+def analyze(raw_input, fresh=False):
     parsed = parse_target(raw_input)
     if not parsed["ok"]:
         return {"ok": False, "error": parsed["error"], "input": raw_input}
@@ -1947,6 +2018,8 @@ def analyze(raw_input):
                          "against public threat-intelligence sources."}
 
     ip = domain if is_ip else resolve_ip(domain)
+    if fresh:
+        _purge_cache([parsed.get(k) for k in ("domain", "registrable", "email", "url", "hash")] + [ip])
 
     if parsed["kind"] == "hash":
         result = _analyze_hash(parsed, raw_input)
@@ -1967,6 +2040,9 @@ def analyze(raw_input):
         "hybrid": bool(HYBRID_API_KEY), "triage": bool(TRIAGE_API_KEY),
         "ipqs": bool(IPQS_API_KEY),
     }
+    # oldest reused answer, so the page and the ticket can say how fresh the data really is
+    ages = [v.get("_age") for v in result.values() if isinstance(v, dict) and v.get("_age") is not None]
+    result["cache_age_s"] = max(ages) if ages else 0
     return result
 
 

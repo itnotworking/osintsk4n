@@ -363,6 +363,8 @@ a:hover { color: #b9c0f0; text-decoration: underline; }
 }
 .degraded b { color: var(--warn); }
 .degraded .src { color: var(--warn); font-weight: 600; }
+#status .cached { color: var(--muted); }
+#status .refresh { color: var(--accent); }
 .warn-note { color: var(--warn); line-height: 1.6; }
 .hidden { display: none; }
 .fade-in { animation: fadeIn .25s ease forwards; }
