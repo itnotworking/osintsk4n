@@ -1507,7 +1507,8 @@ def dnsdumpster(domain):
                           "server": web.get("server") or ", ".join(web.get("apps") or []) or None,
                           "title": web.get("title"), "cert": (b.get("https") or {}).get("cn")})
     names = lambda k: [r.get("host") for r in data.get(k) or [] if isinstance(r, dict) and r.get("host")]
-    return {"hosts": hosts, "total": data.get("total_a_recs") or len(hosts),
+    # total_a_recs counts A records (IPs), not hosts; the free plan returns at most 50 hosts
+    return {"hosts": hosts, "total": len(hosts), "capped": len(data.get("a") or []) >= 50,
             "mx": names("mx"), "ns": names("ns")}
 
 

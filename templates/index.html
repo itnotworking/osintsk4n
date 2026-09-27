@@ -1149,8 +1149,7 @@ function hostsBlock(d) {
   if (isErr(h)) html += failNote(h);
   const rows = (h && !isErr(h) && h.hosts) || [];
   if (rows.length) {
-    const more = (h.total || 0) > rows.length ? " (showing " + rows.length + ")" : "";
-    html += kvrow("Hosts found", h.total + more, "",
+    html += kvrow("Hosts found", h.capped ? rows.length + "+ (first " + rows.length + " shown)" : String(rows.length), "",
       "Hostnames found in DNS for this domain, with the IP, network owner and the web server / page title seen on each. " +
       "Staging, VPN, admin or forgotten hosts are worth a closer look.");
     html += '<div class="htable"><div class="hrow hhead"><span>Host</span><span>IP</span><span>Network</span><span>Web</span></div>' +
