@@ -486,13 +486,13 @@ function cards(d) {
   ));
 
   // VirusTotal
-  out.push(card("VirusTotal", vtBlock(d.vt)));
+  out.push(card("Vendor Detections", vtBlock(d.vt)));
 
   // AbuseIPDB
-  out.push(card("AbuseIPDB (IP)", abuseBlock(d.abuse)));
+  out.push(card("Abuse Reports (IP)", abuseBlock(d.abuse)));
 
   // OTX counts every pulse mentioning the domain — meaningless for providers/platforms, so hide it there
-  if (!provider && !d.is_platform) out.push(card("Threat Intel (OTX)", otxBlock(d.otx)));
+  if (!provider && !d.is_platform) out.push(card("Threat Intel", otxBlock(d.otx)));
   out.push(card("Threat Feeds", threatFeedsBlock(d)));
   out.push(card("IP Reputation", ipRepBlock(d)));
 
@@ -518,9 +518,9 @@ function cards(d) {
 /* ---------- File-hash layout ---------- */
 function hashCards(d) {
   const out = [];
-  out.push(card("File Analysis (VirusTotal)", vtFileBlock(d.vt_file, d)));
+  out.push(card("File Analysis", vtFileBlock(d.vt_file, d)));
   out.push(card("Sandbox Analysis", sandboxBlock(d)));
-  out.push(card("MalwareBazaar", mbBlock(d.mb)));
+  out.push(card("Known Malware", mbBlock(d.mb)));
   out.push(card("Threat Feeds", hashThreatBlock(d)));
   out.push(card("Hash", hashIdsBlock(d)));
   return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
@@ -628,7 +628,7 @@ function cidrCards(d) {
   ));
 
   out.push(card("Block Reputation", cidrRepBlock(d.drop)));
-  out.push(card("Block Abuse (AbuseIPDB)", cidrAbuseBlock(b, d.block)));
+  out.push(card("Block Abuse", cidrAbuseBlock(b, d.block)));
 
   return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
 }
@@ -678,16 +678,16 @@ function ipCards(d) {
   ));
 
   // AbuseIPDB (rich)
-  out.push(card("AbuseIPDB", abuseDetailBlock(ab)));
+  out.push(card("Abuse Reports", abuseDetailBlock(ab)));
 
   // VirusTotal (IP)
-  out.push(card("VirusTotal (IP)", vtIpBlock(d.vt)));
+  out.push(card("Vendor Detections", vtIpBlock(d.vt)));
 
   // IPQualityScore — fraud / proxy / VPN / bot
-  out.push(card("Fraud & Proxy (IPQS)", ipqsBlock(d)));
+  out.push(card("Fraud & Proxy", ipqsBlock(d)));
 
   // proxycheck.io — anonymizer type, risk, honeypot attack history
-  out.push(card("Proxy & Attacks (proxycheck.io)", proxycheckBlock(d)));
+  out.push(card("Proxy & Attacks", proxycheckBlock(d)));
 
   // IP reputation & exposure (public blocklists + Shodan)
   out.push(card("Reputation & Exposure", ipRepBlock(d)));
@@ -898,23 +898,23 @@ function ipAbuseKinds(d) {
 
 function proxycheckBlock(d) {
   const p = d.proxycheck;
-  if (!p) return muted(keyOn('proxycheck') ? 'No proxycheck.io data for this IP.' : 'Set PROXYCHECK_API_KEY to enable proxycheck.io.');
+  if (!p) return muted(keyOn('proxycheck') ? 'No proxy data for this IP.' : 'Proxy checks are not configured.');
   if (isErr(p)) return failNote(p);
   const n = p.attacks || 0, r = p.risk || 0;
   const types = Object.entries(p.attack_types || {}).map(([k, v]) => k + " " + v);
   return kvrow("Anonymizer", p.proxy ? (p.type || "proxy") : "none detected" + (p.type ? " (" + p.type + ")" : ""), p.proxy ? "warn" : "good",
-      "Whether proxycheck.io sees this IP as a proxy, VPN or Tor node, and the connection type (Business, Residential, Hosting, VPN, TOR…). Anonymizers aren't malicious on their own.") +
+      "Whether this IP is a proxy, VPN or Tor node, and the connection type (Business, Residential, Hosting, VPN, TOR…). Anonymizers aren't malicious on their own.") +
     kvrow("Risk", r + "/100", r >= 67 ? "bad" : (r >= 34 ? "warn" : "good"),
-      "proxycheck.io risk score: 0–33 low, 34–66 elevated, 67+ high. VPN/Tor exits score high by nature — weigh it against attack history.") +
+      "Risk score: 0–33 low, 34–66 elevated, 67+ high. VPN/Tor exits score high by nature — weigh it against attack history.") +
     kvrow("Attacks seen", n ? n + (types.length ? " — " + types.join(", ") : "") : "none", n >= 5 ? "bad" : (n ? "warn" : "good"),
-      "Attacks this IP made against proxycheck.io's honeypots (login attempts, vulnerability probing, comment spam…). This is observed behaviour, not a reputation guess.") +
+      "Attacks this IP made against honeypots (login attempts, vulnerability probing, comment spam…). This is observed behaviour, not a reputation guess.") +
     (p.last_seen ? kvrow("Last seen", p.last_seen) : "") +
     ((p.provider || p.organisation) ? kvrow("Provider", p.provider || p.organisation) : "");
 }
 
 function ipqsBlock(d) {
   const q = d.ipqs;
-  if (!q) return muted(keyOn('ipqs') ? 'No IPQualityScore data for this IP.' : 'Set IPQS_API_KEY to enable IPQualityScore.');
+  if (!q) return muted(keyOn('ipqs') ? 'No fraud data for this IP.' : 'Fraud checks are not configured.');
   if (isErr(q)) return failNote(q);
   const fs = q.fraud_score || 0;
   // Fuller anonymizer detail — IPQS flags proxy/vpn/tor separately, with an 'active' (live tunnel) state.
@@ -926,15 +926,15 @@ function ipqsBlock(d) {
   const abuseKinds = ipAbuseKinds(d);
 
   return kvrow("Fraud score", fs + "/100", fs>=85?"bad":(fs>=75?"warn":"good"),
-      "IPQS fraud/risk score (0–100). 85+ is high risk — but VPN/proxy IPs score high even when not actively abusive, so weigh it against 'recent abuse'.") +
+      "Fraud / risk score (0–100). 85+ is high risk — but VPN/proxy IPs score high even when not actively abusive, so weigh it against 'recent abuse'.") +
     kvrow("Recent abuse", q.recent_abuse ? "YES" : "no", q.recent_abuse ? "bad" : "good",
-      "IPQS has seen this IP in fraud/abuse activity recently (via its honeypot & threat network). The free tier reports yes/no only — the activity type is shown in 'Reported for' below, drawn from AbuseIPDB / OTX / ThreatFox.") +
+      "This IP has been seen in fraud / abuse activity recently. This check reports yes/no only — the kind of activity is shown in 'Reported for' below.") +
     (abuseKinds.length ? kvrow("Reported for", abuseKinds.slice(0, 5).join(", "), "bad",
       "The kind of activity this IP has actually been reported for — AbuseIPDB categories, OTX malware/actors, and ThreatFox family. This is where the 'what' behind the abuse flags comes from.") : "") +
     kvrow("Anonymizer", anon, (anon === "none detected") ? "good" : "warn",
-      "Which anonymizer types IPQS detects (proxy / VPN / Tor). 'active' means a live tunnel at scan time.") +
+      "Which anonymizer types are detected (proxy / VPN / Tor). 'active' means a live tunnel at scan time.") +
     kvrow("Bot / automation", q.bot_status ? "YES" : "no", q.bot_status ? "bad" : "",
-      "IPQS classifies traffic from this IP as automated / non-human (scanners, credential-stuffing, scrapers, spam bots). The free tier does not name a specific botnet — check 'Reported for' and the Threat Intel card for any named family.") +
+      "Traffic from this IP is classified as automated / non-human (scanners, credential-stuffing, scrapers, spam bots). This check does not name a specific botnet — check 'Reported for' and the Threat Intel card for any named family.") +
     (q.connection_type ? kvrow("Connection", q.connection_type) : "") +
     (q.isp ? kvrow("ISP", q.isp) : "");
 }
@@ -1011,7 +1011,7 @@ function liveBtn(label) {
 }
 
 function urlscanSection(d) {
-  return '<div class="card us-section fade-in"><h3><span class="ttl">urlscan.io</span></h3>' +
+  return '<div class="card us-section fade-in"><h3><span class="ttl">Page Scan</span></h3>' +
     '<div id="urlscanBody">' + urlscanBlock(d.urlscan) + '</div></div>';
 }
 
