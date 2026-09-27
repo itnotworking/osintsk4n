@@ -587,13 +587,14 @@ def abuseipdb_block(cidr):
         r = requests.get(
             "https://api.abuseipdb.com/api/v2/check-block",
             headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
-            params={"network": cidr, "maxAgeInDays": 90},
+            # free plan caps check-block at /24 and 30 days — asking for more returns 402, not data
+            params={"network": cidr, "maxAgeInDays": 30},
             timeout=15,
         )
     except Exception:
         return {"error": "Could not reach AbuseIPDB."}
     if r.status_code in (402, 403):
-        return {"error": "AbuseIPDB check-block isn't available on this API plan (paid feature)."}
+        return {"error": "AbuseIPDB rejected the block check for this plan (free tier: up to /24, 30 days)."}
     if r.status_code == 422:
         return {"error": "AbuseIPDB rejected this network (size or format)."}
     if r.status_code == 429:
