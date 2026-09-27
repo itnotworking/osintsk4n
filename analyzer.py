@@ -228,6 +228,8 @@ def _api(url, method="GET", headers=None, params=None, data=None, json_body=None
                              json=json_body, timeout=timeout)
     except requests.Timeout:
         return None, None, "timed out"
+    except requests.ConnectionError:
+        return None, None, "provider dropped the connection"
     except Exception:
         return None, None, "unreachable"
     try:
@@ -805,7 +807,7 @@ def urlscan_search(domain):
     headers = {"API-Key": URLSCAN_API_KEY} if URLSCAN_API_KEY else None
     # match on task.domain (the submitted domain), not every domain the page contacted
     st, data, err = _api("https://urlscan.io/api/v1/search/", headers=headers,
-                         params={"q": f"task.domain:{domain}", "size": 5}, timeout=8)
+                         params={"q": f"task.domain:{domain}", "size": 5}, timeout=15)
     if err:
         return {"error": err}
     if not data or not data.get("results"):
@@ -1113,7 +1115,7 @@ def threatfox_lookup(ioc, registrable=None):
     if ABUSECH_API_KEY:
         headers["Auth-Key"] = ABUSECH_API_KEY
     st, d, err = _api("https://threatfox-api.abuse.ch/api/v1/", method="POST", headers=headers,
-                      json_body={"query": "search_ioc", "search_term": ioc}, timeout=20)   # authenticated search runs ~10s
+                      json_body={"query": "search_ioc", "search_term": ioc}, timeout=30)   # ~10s typical, >20s for very common IPs
     if err:
         return {"error": err}
     qs = (d or {}).get("query_status")
