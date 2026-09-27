@@ -275,6 +275,28 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { color: #b9c0f0; text-decoration: underline; }
 .subs { max-height: 220px; overflow: auto; font-size: 12px; }
 .subs div { padding: 1px 0; color: var(--muted); }
+/* hosts & services table */
+.htable { margin-top: 12px; max-height: 360px; overflow-y: auto; font-size: 12px; }
+.hrow {
+  display: grid; grid-template-columns: minmax(0, 1.25fr) 128px minmax(0, 1fr) minmax(0, 1.5fr);
+  gap: 16px; padding: 6px 0; border-bottom: 1px solid var(--line-soft); align-items: baseline;
+}
+.hrow > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hrow.hhead {
+  position: sticky; top: 0; background: var(--bg); z-index: 1;
+  font-size: 9.5px; letter-spacing: 2px; text-transform: uppercase; color: var(--faint);
+  border-bottom: 1px solid var(--line);
+}
+.h-host { color: var(--text); }
+.h-ip { color: var(--accent); font-variant-numeric: tabular-nums; }
+.h-own, .h-web { color: var(--muted); }
+.h-web i { font-style: normal; color: #b4b4be; }
+.subs.cert-only { margin-top: 8px; columns: 3 200px; column-gap: 24px; }
+@media (max-width: 680px) {
+  .hrow { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; }
+  .hrow .h-own, .hrow .h-web { grid-column: 1 / -1; }
+  .hrow.hhead span:nth-child(n+3) { display: none; }
+}
 
 /* ---- ticket: borderless, content in a subtle inset ---- */
 .ticket { margin-top: 40px; padding-top: 34px; border-top: 2px solid var(--divider); }

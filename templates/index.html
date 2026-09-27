@@ -509,8 +509,8 @@ function cards(d) {
     kvrow("TXT", (d.txt||[]).join("\n") || "None", (d.txt && d.txt.length ? "scroll-val" : ""))
   ));
 
-  if (d.crtsh && d.crtsh.subdomains && d.crtsh.subdomains.length)
-    out.push(card("Subdomains (crt.sh)", crtBlock(d.crtsh)));
+  const hostsHtml = hostsBlock(d);
+  if (hostsHtml) out.push(card("Hosts & Services", hostsHtml, "span2"));
 
   // skip urlscan for email searches
   return '<div class="grid">' + out.join("") + '</div>' +
@@ -768,8 +768,8 @@ function ipThreatBlock(d) {
   return html;
 }
 
-function card(title, body) {
-  return '<div class="card fade-in"><h3><span class="ttl">' + esc(title) + '</span></h3><div class="kv-wrap">' + body + '</div></div>';
+function card(title, body, cls) {
+  return '<div class="card fade-in' + (cls ? ' ' + cls : '') + '"><h3><span class="ttl">' + esc(title) + '</span></h3><div class="kv-wrap">' + body + '</div></div>';
 }
 function kvrow(k, v, cls, tip) {
   return '<div class="kv' + (tip ? ' has-tip' : '') + '"' + (tip ? ' data-tip="' + esc(tip) + '"' : '') + '>' +
@@ -850,20 +850,37 @@ function ipRepBlock(d) {
     const n = bl.ipsum_count;
     html += kvrow("Public blocklists", n == null ? "unavailable" : (n ? "on " + n + " list" + (n === 1 ? "" : "s") : "not listed"),
       n == null ? "" : (n >= 3 ? "bad" : (n ? "warn" : "good")),
-      "IPsum merges 30+ public blocklists (scanners, brute-forcers, spam, botnets) daily and counts how many list this IP. 3+ lists is a strong signal; a single listing can be stale." +
+      "Merged daily from 30+ public blocklists (scanners, brute-forcers, spam, botnets), counting how many list this IP. 3+ lists is a strong signal; a single listing can be stale." +
       (bl.list_date ? " Lists updated " + bl.list_date + "." : ""));
     html += kvrow("Tor exit", bl.tor_exit == null ? "unknown (list unavailable)" : (bl.tor_exit ? "YES" : "no"), bl.tor_exit ? "warn" : "",
-      "Checked against the Tor Project's published exit-node list, refreshed every 6 hours.");
+      "Checked against the published Tor exit-node list, refreshed every 6 hours.");
   }
-  if (isErr(s)) html += failRow("Shodan", s);
+  if (isErr(s)) html += failRow("Exposure", s);
   else if (s) {
-    html += kvrow("Open ports", (s.ports && s.ports.length) ? s.ports.join(", ") : "none seen");
-    if (s.vulns && s.vulns.length) html += kvrow("CVEs", s.vulns.slice(0, 8).join(", "), "warn");
-    if (s.tags && s.tags.length) html += kvrow("Shodan tags", s.tags.join(", "));
+    html += kvrow("Open ports", (s.ports && s.ports.length) ? s.ports.join(", ") : "none seen", "",
+      "Ports seen open by internet-wide scanning (updated weekly).");
+    const sw = cpeNames(s.cpes);
+    if (sw.length) html += kvrow("Software", sw.join(", "), "",
+      "Products and versions fingerprinted on those ports. Old versions are where the CVEs below come from.");
+    if (s.vulns && s.vulns.length) {
+      const v = s.vulns.slice().sort().reverse();   // newest CVE years first
+      html += kvrow("CVEs", s.vulns.length > 8 ? s.vulns.length + " known — " + v.slice(0, 8).join(", ") + " …" : v.join(", "), "warn",
+        "Known vulnerabilities for the software versions seen, newest first. Matched by version, so not every one is confirmed exploitable.");
+    }
+    if (s.hostnames && s.hostnames.length) html += kvrow("Hostnames", s.hostnames.slice(0, 6).join(", ") + (s.hostnames.length > 6 ? " …" : ""));
+    if (s.tags && s.tags.length) html += kvrow("Tags", s.tags.join(", "));
   } else {
-    html += kvrow("Shodan", "no exposure data");
+    html += kvrow("Exposure", "no scan data");
   }
   return html;
+}
+
+// cpe:/a:openbsd:openssh:6.6.1p1 → "openssh 6.6.1p1"
+function cpeNames(cpes) {
+  return [...new Set((cpes || []).map(c => {
+    const p = String(c).split(":");
+    return ((p[3] || p[2] || "").replace(/_/g, " ") + (p[4] ? " " + p[4] : "")).trim();
+  }).filter(Boolean))];
 }
 
 // Pull the "what kind of activity" detail from the sources that actually provide it (IPQS free tier
@@ -1123,10 +1140,38 @@ function renderLiveResult(res) {
   if (danger) html = redirectAlert(res.redirect.to_reg) + html;
   body.innerHTML = html;
 }
-function crtBlock(c) {
-  if (!c || !c.subdomains) return '<pre class="muted">No certificate data</pre>';
-  return '<div class="kv"><div class="k">Total</div><div class="v">' + c.count + '</div></div>' +
-    '<div class="subs" style="margin-top:8px">' + c.subdomains.map(s => '<div>' + esc(s) + '</div>').join("") + '</div>';
+// Hosts & Services: hosts found in DNS for the apex (IP, network owner, web server / page title), plus names
+// that only appear on TLS certificates. Returns "" when there's nothing to show, so the card is skipped.
+function hostsBlock(d) {
+  const h = d.hosts, c = d.crtsh || {};
+  const certNames = c.subdomains || [];
+  let html = "";
+  if (isErr(h)) html += failNote(h);
+  const rows = (h && !isErr(h) && h.hosts) || [];
+  if (rows.length) {
+    const more = (h.total || 0) > rows.length ? " (showing " + rows.length + ")" : "";
+    html += kvrow("Hosts found", h.total + more, "",
+      "Hostnames found in DNS for this domain, with the IP, network owner and the web server / page title seen on each. " +
+      "Staging, VPN, admin or forgotten hosts are worth a closer look.");
+    html += '<div class="htable"><div class="hrow hhead"><span>Host</span><span>IP</span><span>Network</span><span>Web</span></div>' +
+      rows.map(r => '<div class="hrow">' +
+        '<span class="h-host">' + esc(r.host || "") + '</span>' +
+        '<span class="h-ip">' + esc(r.ip || "—") + '</span>' +
+        '<span class="h-own" title="' + esc((r.owner || "") + (r.cc ? " · " + r.cc : "")) + '">' + esc(r.owner || "—") + '</span>' +
+        '<span class="h-web" title="' + esc([r.server, r.title, r.cert].filter(Boolean).join(" · ")) + '">' +
+          (r.server || r.title ? esc(r.server || "") + (r.server && r.title ? ' · ' : '') + (r.title ? '<i>' + esc(r.title) + '</i>' : '') : '<span class="muted">—</span>') +
+        '</span></div>').join("") + '</div>';
+  }
+  // names on certificates that DNS didn't turn up (internal, retired or wildcard-hidden hosts)
+  const seen = new Set(rows.map(r => (r.host || "").toLowerCase()));
+  const certOnly = certNames.filter(n => !seen.has(n));
+  if (certOnly.length) {
+    html += kvrow(rows.length ? "Only on certificates" : "Subdomains (certificates)", String(certOnly.length), "",
+      "Hostnames listed on public TLS certificates for this domain. Ones that don't resolve in DNS may be internal, retired, or new.");
+    html += '<div class="subs cert-only">' + certOnly.map(n => '<div>' + esc(n) + '</div>').join("") + '</div>';
+  }
+  if (!html && h && !isErr(h)) html = muted("No hosts found in DNS or on certificates for this domain.");
+  return html;
 }
 /* ---------- ticket summary: three audiences ---------- */
 let ticketFmts = {};

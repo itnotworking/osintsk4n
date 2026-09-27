@@ -39,6 +39,7 @@ IPQS_API_KEY = _key("IPQS_API_KEY")
 HYBRID_API_KEY = _key("HYBRID_API_KEY")
 TRIAGE_API_KEY = _key("TRIAGE_API_KEY")
 PROXYCHECK_API_KEY = _key("PROXYCHECK_API_KEY")
+DNSDUMPSTER_API_KEY = _key("DNSDUMPSTER_API_KEY")
 
 USER_AGENT = "osintsk4n/2.0 (SOC triage)"
 _executor = ThreadPoolExecutor(max_workers=16)
@@ -1475,6 +1476,41 @@ def emailrep_lookup(email):
     }
 
 
+_dd_lock = threading.Lock()
+_dd_last = [0.0]
+
+
+@_cached
+def dnsdumpster(domain):
+    """DNSDumpster — hosts found in DNS for a domain, each with IP, network owner and web banner.
+    Free key: 50 lookups/day, 50 hosts per lookup, and at most one request every 2 seconds."""
+    if not domain or not DNSDUMPSTER_API_KEY:
+        return None
+    with _dd_lock:   # the 2-second spacing is per key, so serialize across concurrent lookups
+        wait = 2.05 - (time.time() - _dd_last[0])
+        if wait > 0:
+            time.sleep(wait)
+        st, data, err = _api(f"https://api.dnsdumpster.com/domain/{quote(domain)}",
+                             headers={"X-API-Key": DNSDUMPSTER_API_KEY}, timeout=25)
+        _dd_last[0] = time.time()
+    if err:
+        return {"error": err, "detail": str((data or {}).get("error") or "")[:160] if isinstance(data, dict) else ""}
+    if not isinstance(data, dict):
+        return {"error": "unexpected response"}
+    hosts = []
+    for rec in data.get("a") or []:
+        for ipr in (rec.get("ips") or [{}])[:1]:          # first IP per host keeps the table readable
+            b = ipr.get("banners") or {}
+            web = b.get("https") or b.get("http") or {}
+            hosts.append({"host": rec.get("host"), "ip": ipr.get("ip"),
+                          "owner": ipr.get("asn_name"), "cc": ipr.get("country_code"),
+                          "server": web.get("server") or ", ".join(web.get("apps") or []) or None,
+                          "title": web.get("title"), "cert": (b.get("https") or {}).get("cn")})
+    names = lambda k: [r.get("host") for r in data.get(k) or [] if isinstance(r, dict) and r.get("host")]
+    return {"hosts": hosts, "total": data.get("total_a_recs") or len(hosts),
+            "mx": names("mx"), "ns": names("ns")}
+
+
 def crtsh(domain):
     """Subdomain / certificate enumeration via crt.sh (free, no key)."""
     try:
@@ -2174,6 +2210,7 @@ def analyze(raw_input, fresh=False):
         "gsb": bool(GSB_API_KEY), "abusech": bool(ABUSECH_API_KEY),
         "hybrid": bool(HYBRID_API_KEY), "triage": bool(TRIAGE_API_KEY),
         "ipqs": bool(IPQS_API_KEY), "proxycheck": bool(PROXYCHECK_API_KEY),
+        "dnsdumpster": bool(DNSDUMPSTER_API_KEY),
     }
     # oldest reused answer, so the page and the ticket can say how fresh the data really is
     ages = [v.get("_age") for v in result.values() if isinstance(v, dict) and v.get("_age") is not None]
@@ -2300,6 +2337,9 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "abuse": _executor.submit(abuseipdb, ip),
         "urlscan": _executor.submit(lambda: None) if is_email else _executor.submit(urlscan_search, domain),
         "crtsh": _executor.submit(crtsh, reg_or_host),
+        # host enumeration of the apex: domain/URL lookups only (50/day free), never a shared platform
+        "hosts": _executor.submit(dnsdumpster, reg_dom) if parsed["kind"] in ("domain", "url") and not on_shared_host
+                 else _executor.submit(lambda: None),
         "dkim":  _executor.submit(check_dkim, domain),
         "otx":   _executor.submit(otx_lookup, reg_or_host),
         "threatfox": _executor.submit(threatfox_lookup, domain, reg_or_host),
@@ -2352,7 +2392,7 @@ def _analyze_domain(parsed, domain, ip, raw_input):
         "vt": res["vt"], "rdap_events": rdap_events(res["rdap"]),
         "registrar": rdap_registrar(res["rdap"]),
         "info": res["info"], "abuse": res["abuse"],
-        "urlscan": res["urlscan"], "crtsh": res["crtsh"],
+        "urlscan": res["urlscan"], "crtsh": res["crtsh"], "hosts": res["hosts"],
         "dkim": res["dkim"],
         "otx": res["otx"], "threatfox": res["threatfox"],
         "urlhaus": res["urlhaus"], "shodan": res["shodan"],
