@@ -77,6 +77,18 @@ function finishLoader() {
   if (fill) fill.style.width = "100%";
   if (p) p.textContent = "100%";
 }
+// Tor exits take ~25s (feeds time out on their huge report histories) vs ~2s for a normal IP —
+// say so up front, from an instant local check, so a slow search doesn't look broken.
+async function torNotice(target, controller) {
+  try {
+    const r = await (await fetch("/precheck?target=" + encodeURIComponent(target), { signal: controller.signal })).json();
+    const step = $("loaderStep");
+    if (!r.tor_exit || controller.signal.aborted || !step) return;
+    step.closest(".loader").insertAdjacentHTML("beforeend",
+      '<div class="loader-note fade-in"><b>Tor exit node</b> — lookups on Tor infrastructure run slower, usually around 25 seconds.</div>');
+  } catch (_) {}
+}
+
 function stopLoader() { if (loaderTimer) { clearInterval(loaderTimer); loaderTimer = null; } }
 
 let currentController = null;
@@ -113,6 +125,7 @@ async function analyze(fresh) {
   setRunning(true);
   startLoader(target);
   $("output").innerHTML = "";
+  torNotice(target, controller);
 
   const form = new FormData();
   form.append("target", target);
@@ -268,12 +281,14 @@ function verdictBanner(d) {
 }
 
 // Source coverage rail — one segment per core source: solid = answered, hatched = no answer.
-// Answered sort first, so the rail reads as a fill bar. Shown only when something failed.
+// Answered sort first, so the rail reads as a fill bar. Only failed sources are named (the analyst has to
+// check those by hand); the ones that answered stay unlabeled so the stack isn't on display.
+// Shown only when something failed.
 function coverageRail(d, inconclusive) {
   const errs = d.source_errors || [];
   if (!errs.length) return "";
   const cov = (d.coverage || []).slice().sort((a, b) => (b.ok ? 1 : 0) - (a.ok ? 1 : 0));
-  const core = new Set(cov.map(c => c.source));
+  const core = new Set(cov.filter(c => !c.ok).map(c => c.source));
   const missed = cov.filter(c => !c.ok).map(c => c.source);
   const extra = errs.filter(e => !core.has(e.source));   // failures outside the core set (e.g. Shodan)
   const short = e => String(e || "no answer").replace(/ reached$/, "").replace(/^provider /, "");
@@ -282,8 +297,8 @@ function coverageRail(d, inconclusive) {
   const cells = cov.map((c, i) =>
     '<div class="cv-cell' + (c.ok ? '' : ' miss') + '" style="--i:' + i + '"' +
       (c.ok ? '' : ' title="' + esc(c.source + ': ' + (c.error || 'no answer')) + '"') + '>' +
-      '<i class="cv-seg"></i><span class="cv-name">' + esc(c.source) + '</span>' +
-      (c.ok ? '' : '<span class="cv-why">' + esc(short(c.error)) + '</span>') +
+      '<i class="cv-seg"></i>' +
+      (c.ok ? '' : '<span class="cv-name">' + esc(c.source) + '</span><span class="cv-why">' + esc(short(c.error)) + '</span>') +
     '</div>').join("");
 
   let note = inconclusive
@@ -292,6 +307,8 @@ function coverageRail(d, inconclusive) {
       ? "Verdict rests on the " + d.core_answered + " that answered — check " + list(missed) + " directly before closing a ticket."
       : "All core sources answered.";
   if (extra.length) note += " Also no answer from " + extra.map(e => "<b>" + esc(e.source) + "</b> (" + esc(short(e.error)) + ")").join(", ") + ".";
+  if ((d.blocklists || {}).tor_exit && errs.some(e => /timed out|dropped/.test(e.error || "")))
+    note += " Timeouts are common on Tor exit nodes.";
 
   return '<div class="coverage fade-in' + (inconclusive ? ' thin' : '') + '">' +
     '<h3><span class="ttl">Source coverage</span>' +

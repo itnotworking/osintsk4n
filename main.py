@@ -79,6 +79,17 @@ async def health():
     }
 
 
+@app.get("/precheck", response_class=JSONResponse)
+async def precheck(target: str = ""):
+    """Instant, local-only check so the UI can warn before a known-slow lookup (Tor exits run ~25s)."""
+    parsed = analyzer.parse_target(target[:256]) if target else {}
+    ip = parsed.get("domain") if parsed.get("ok") and parsed.get("is_ip") else None
+    if not ip or not analyzer.is_public_ip(ip):
+        return {"tor_exit": False}
+    bl = await asyncio.to_thread(analyzer.blocklist_lookup, ip)
+    return {"tor_exit": bool((bl or {}).get("tor_exit"))}
+
+
 @app.post("/analyze", response_class=JSONResponse)
 async def analyze(request: Request, target: str = Form(...), fresh: str = Form("")):
     ip = _client_ip(request)
