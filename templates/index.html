@@ -216,12 +216,11 @@ function verdictClass(v) {
 
 // A source that errored is a failed lookup, never a clean result — render it that way everywhere.
 function isErr(x) { return !!(x && typeof x === "object" && x.error); }
-function failNote(x) {
-  return muted("⚠ Unavailable — " + x.error + ". Failed lookup, not a clean result." +
-    (x.detail ? "\nProvider said: " + x.detail : ""));
-}
-function failRow(label, x) { return kvrow(label, "⚠ unavailable — " + x.error, "warn", "This source didn't answer, so it tells us nothing either way — it is NOT a clean result."); }
-function srcErrNames(d) { return (d.source_errors || []).map(e => e.source + ": " + e.error); }
+// A failed source says only that it's unavailable — the cause (quota, timeout, provider message) is ours to
+// fix, not the analyst's. The reason still goes to source_errors for the ticket audit trail.
+function failNote(x) { return muted("Unavailable for this lookup — no data, so don't read this as clean."); }
+function failRow(label, x) { return kvrow(label, "unavailable", "warn", "No data for this lookup, so it tells us nothing either way — it is NOT a clean result."); }
+function srcErrNames(d) { return (d.source_errors || []).map(e => e.source); }
 // ticket audit trail: say when some sources were reused from the cache rather than fetched now
 function cacheSuffix(d) { return d.cache_age_s > 0 ? "  (some sources cached, up to " + Math.max(1, Math.round(d.cache_age_s / 60)) + " min old)" : ""; }
 // a risk score is meaningless when the lookup failed or the name doesn't exist
@@ -291,14 +290,13 @@ function coverageRail(d, inconclusive) {
   const core = new Set(cov.filter(c => !c.ok).map(c => c.source));
   const missed = cov.filter(c => !c.ok).map(c => c.source);
   const extra = errs.filter(e => !core.has(e.source));   // failures outside the core set (e.g. Shodan)
-  const short = e => String(e || "no answer").replace(/ reached$/, "").replace(/^provider /, "");
   const list = a => { a = a.map(x => "<b>" + esc(x) + "</b>"); return a.length > 1 ? a.slice(0, -1).join(", ") + " and " + a[a.length - 1] : (a[0] || ""); };
 
+  // failed sources are named, but why they failed (quota, timeout) isn't the analyst's concern
   const cells = cov.map((c, i) =>
-    '<div class="cv-cell' + (c.ok ? '' : ' miss') + '" style="--i:' + i + '"' +
-      (c.ok ? '' : ' title="' + esc(c.source + ': ' + (c.error || 'no answer')) + '"') + '>' +
+    '<div class="cv-cell' + (c.ok ? '' : ' miss') + '" style="--i:' + i + '">' +
       '<i class="cv-seg"></i>' +
-      (c.ok ? '' : '<span class="cv-name">' + esc(c.source) + '</span><span class="cv-why">' + esc(short(c.error)) + '</span>') +
+      (c.ok ? '' : '<span class="cv-name">' + esc(c.source) + '</span><span class="cv-why">no data</span>') +
     '</div>').join("");
 
   let note = inconclusive
@@ -306,7 +304,7 @@ function coverageRail(d, inconclusive) {
     : missed.length
       ? "Verdict rests on the " + d.core_answered + " that answered — check " + list(missed) + " directly before closing a ticket."
       : "All core sources answered.";
-  if (extra.length) note += " Also no answer from " + extra.map(e => "<b>" + esc(e.source) + "</b> (" + esc(short(e.error)) + ")").join(", ") + ".";
+  if (extra.length) note += " Also no data from " + list(extra.map(e => e.source)) + ".";
   if ((d.blocklists || {}).tor_exit && errs.some(e => /timed out|dropped/.test(e.error || "")))
     note += " Timeouts are common on Tor exit nodes.";
 
@@ -647,8 +645,7 @@ function cidrRepBlock(drop) {
 
 function cidrAbuseBlock(b, present) {
   if (!present) return muted(keyOn('abuseipdb') ? 'No AbuseIPDB block data returned.' : 'Set ABUSEIPDB_API_KEY to enable AbuseIPDB.');
-  if (b.error) return '<div class="v warn" style="line-height:1.6">' + esc(b.error) + '</div>' +
-    '<div class="muted" style="font-size:11px;margin-top:8px">Block-level abuse aggregation needs the AbuseIPDB check-block endpoint. Individual IPs in the range can still be triaged one at a time.</div>';
+  if (b.error) return failNote(b) + muted("Individual IPs in the range can still be triaged one at a time.");
   const rc = b.reported_count || 0, hosts = b.num_hosts || 256;
   const pct = hosts ? Math.round(rc / hosts * 100) : 0;
   let html = kvrow("Reported addresses", rc + " of " + hosts + "  (" + pct + "%)", rc ? (pct>=8?"bad":"warn") : "good");
@@ -870,7 +867,8 @@ function ipRepBlock(d) {
     if (s.hostnames && s.hostnames.length) html += kvrow("Hostnames", s.hostnames.slice(0, 6).join(", ") + (s.hostnames.length > 6 ? " …" : ""));
     if (s.tags && s.tags.length) html += kvrow("Tags", s.tags.join(", "));
   } else {
-    html += kvrow("Exposure", "no scan data");
+    html += kvrow("Open ports", "none on record", "",
+      "This IP hasn't been seen with open services in internet-wide scans. CDN and anycast edge IPs often aren't.");
   }
   return html;
 }
@@ -915,7 +913,7 @@ function proxycheckBlock(d) {
 function ipqsBlock(d) {
   const q = d.ipqs;
   if (!q) return muted(keyOn('ipqs') ? 'No IPQualityScore data for this IP.' : 'Set IPQS_API_KEY to enable IPQualityScore.');
-  if (isErr(q)) return failNote(q) + (/quota/.test(q.error) ? muted("IPQS free tier allows 35 lookups/day and 1,000/month, shared across IP and email checks.") : "");
+  if (isErr(q)) return failNote(q);
   const fs = q.fraud_score || 0;
   // Fuller anonymizer detail — IPQS flags proxy/vpn/tor separately, with an 'active' (live tunnel) state.
   const kinds = [];
@@ -1277,10 +1275,9 @@ function stampUTC() {
 // Evidence trail: every source consulted and what it said. A clean source is recorded explicitly so a
 // reviewer can tell it was checked and came back empty — not silently skipped.
 function evidence(d) {
-  // a source that errored goes under "No data" with the reason — never "No hits"
-  const failed = {};
-  (d.source_errors || []).forEach(e => { failed[e.source] = e.error; });
-  return evidenceRaw(d).map(e => failed[e.name] ? { name: e.name, status: "na", detail: failed[e.name] } : e);
+  // a source that errored goes under "No data" — never "No hits"
+  const failed = new Set((d.source_errors || []).map(e => e.source));
+  return evidenceRaw(d).map(e => failed.has(e.name) ? { name: e.name, status: "na", detail: "no data" } : e);
 }
 
 function evidenceRaw(d) {
@@ -1300,7 +1297,7 @@ function evidenceRaw(d) {
     if (!mb) add("MalwareBazaar", "na"); else mb.found ? add("MalwareBazaar", "hit", mb.signature || "known sample") : add("MalwareBazaar", "clean");
     const hy = d.hybrid;
     if (!hy) add("Hybrid Analysis", "na", keyOn('hybrid') ? "no response" : "no API key");
-    else if (hy.error) add("Hybrid Analysis", "na", hy.error);
+    else if (hy.error) add("Hybrid Analysis", "na", "no data");
     else if (hy.found) add("Hybrid Analysis", "hit", (hy.verdict || "?") + (hy.threat_score != null ? ", threat " + hy.threat_score + "/100" : "") + (hy.family ? ", " + hy.family : ""));
     else add("Hybrid Analysis", "clean", hy.note || "not sandboxed");
     const tr = d.triage;
@@ -1317,7 +1314,7 @@ function evidenceRaw(d) {
     if (!dr) add("Spamhaus DROP", "na"); else dr.listed ? add("Spamhaus DROP", "hit", dr.sblid || "listed") : add("Spamhaus DROP", "clean", "not listed");
     const b = d.block;
     if (!b) add("AbuseIPDB (block)", "na", keyOn('abuseipdb') ? "no data" : "no API key");
-    else if (b.error) add("AbuseIPDB (block)", "na", b.error);
+    else if (b.error) add("AbuseIPDB (block)", "na", "no data");
     else (b.reported_count || 0) > 0 ? add("AbuseIPDB (block)", "hit", b.reported_count + " reported addresses") : add("AbuseIPDB (block)", "clean", "no reported addresses");
     if (d.rdap_ip && (d.rdap_ip.name || d.rdap_ip.org)) add("RDAP", "clean", "allocation confirmed");
     return out;
@@ -1344,12 +1341,12 @@ function evidenceRaw(d) {
     const uh = d.urlhaus; if (!uh) add("URLhaus", "na"); else uh.found ? add("URLhaus", "hit", (uh.url_count || 0) + " malware URLs") : add("URLhaus", "clean", "no match");
     const pc = d.proxycheck;
     if (!pc) add("proxycheck.io", "na", keyOn('proxycheck') ? "no response" : "no API key");
-    else if (pc.error) add("proxycheck.io", "na", pc.error);
+    else if (pc.error) add("proxycheck.io", "na", "no data");
     else (pc.attacks || 0) > 0 ? add("proxycheck.io", "hit", pc.attacks + " honeypot attack(s)" + (pc.type ? ", " + pc.type : ""))
       : add("proxycheck.io", "clean", "no attacks seen" + (pc.proxy ? ", " + (pc.type || "proxy") : ""));
     const bl = d.blocklists;
     if (!bl) add("Public blocklists", "na");
-    else if (bl.error) add("Public blocklists", "na", bl.error);
+    else if (bl.error) add("Public blocklists", "na", "no data");
     else if (bl.ipsum_count == null) add("Public blocklists", "na", "IPsum unavailable");
     else bl.ipsum_count > 0 ? add("Public blocklists", "hit", "on " + bl.ipsum_count + " list(s)" + (bl.tor_exit ? ", Tor exit" : ""))
       : add("Public blocklists", "clean", "not listed" + (bl.tor_exit ? ", Tor exit" : ""));
