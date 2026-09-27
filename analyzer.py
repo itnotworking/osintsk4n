@@ -2124,6 +2124,11 @@ def _flag_degraded(result):
     answered = [k for k in core if isinstance(result.get(k), dict) and not result[k].get("error")]
     result["core_answered"] = len(answered)
     result["core_total"] = len(core)
+    # per-source status for the coverage rail; a source with no dict came back silent
+    result["coverage"] = [{"source": SOURCE_LABELS.get(k, k), "ok": k in answered,
+                           "error": None if k in answered else
+                           ((result.get(k) or {}).get("error") if isinstance(result.get(k), dict) else "no answer")}
+                          for k in core]
     # positive findings from the sources that did answer still stand; only a would-be "clean" call is withheld
     if core and len(answered) * 2 < len(core) and result.get("verdict") in ("Likely Legitimate", "Low–Moderate"):
         result["verdict"] = "Inconclusive"

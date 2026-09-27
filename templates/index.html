@@ -244,12 +244,7 @@ function verdictBanner(d) {
   const sub = unresolved ? "does not resolve — no DNS records"
     : inconclusive ? "incomplete — only " + d.core_answered + " of " + d.core_total + " core sources returned data"
     : ("risk " + d.score + "/100");
-  const errs = d.source_errors || [];
-  const degraded = errs.length ?
-    '<div class="degraded fade-in"><b>⚠ Incomplete lookup</b> — ' + errs.length + ' source' + (errs.length === 1 ? "" : "s") +
-    " didn't respond, so " + (inconclusive ? "there isn't enough evidence for a verdict" : "this verdict rests on the others") + ": " +
-    errs.map(e => '<span class="src">' + esc(e.source) + '</span> (' + esc(e.error) + ')').join(" · ") +
-    '. Re-run shortly, or check them directly before closing a ticket.</div>' : '';
+  const coverage = coverageRail(d, inconclusive);
   const tags = (d.flags || []).map(f => {
     const tip = FLAG_TIPS[f.cat] || "";
     return '<span class="tag"' + (tip ? ' title="' + esc(tip) + '"' : '') +
@@ -265,11 +260,46 @@ function verdictBanner(d) {
         (tags ? '<div class="tags">' + tags + '</div>' : '') +
       '</div>' +
     '</div>' +
-    degraded +
+    coverage +
     '<div class="brief fade-in"><h3>Summary</h3><p>' + esc(buildBrief(d)) + '</p></div>' +
     (d.reasons && d.reasons.length ?
       '<div class="signals fade-in"><h3>Signals</h3><ul>' +
       d.reasons.map(r => "<li>" + esc(r) + "</li>").join("") + '</ul></div>' : '');
+}
+
+// Source coverage rail — one segment per core source: solid = answered, hatched = no answer.
+// Answered sort first, so the rail reads as a fill bar. Shown only when something failed.
+function coverageRail(d, inconclusive) {
+  const errs = d.source_errors || [];
+  if (!errs.length) return "";
+  const cov = (d.coverage || []).slice().sort((a, b) => (b.ok ? 1 : 0) - (a.ok ? 1 : 0));
+  const core = new Set(cov.map(c => c.source));
+  const missed = cov.filter(c => !c.ok).map(c => c.source);
+  const extra = errs.filter(e => !core.has(e.source));   // failures outside the core set (e.g. Shodan)
+  const short = e => String(e || "no answer").replace(/ reached$/, "").replace(/^provider /, "");
+  const list = a => { a = a.map(x => "<b>" + esc(x) + "</b>"); return a.length > 1 ? a.slice(0, -1).join(", ") + " and " + a[a.length - 1] : (a[0] || ""); };
+
+  const cells = cov.map((c, i) =>
+    '<div class="cv-cell' + (c.ok ? '' : ' miss') + '" style="--i:' + i + '"' +
+      (c.ok ? '' : ' title="' + esc(c.source + ': ' + (c.error || 'no answer')) + '"') + '>' +
+      '<i class="cv-seg"></i><span class="cv-name">' + esc(c.source) + '</span>' +
+      (c.ok ? '' : '<span class="cv-why">' + esc(short(c.error)) + '</span>') +
+    '</div>').join("");
+
+  let note = inconclusive
+    ? "Not enough sources answered to call this one — hold the ticket, re-run, or check " + list(missed) + " directly."
+    : missed.length
+      ? "Verdict rests on the " + d.core_answered + " that answered — check " + list(missed) + " directly before closing a ticket."
+      : "All core sources answered.";
+  if (extra.length) note += " Also no answer from " + extra.map(e => "<b>" + esc(e.source) + "</b> (" + esc(short(e.error)) + ")").join(", ") + ".";
+
+  return '<div class="coverage fade-in' + (inconclusive ? ' thin' : '') + '">' +
+    '<h3><span class="ttl">Source coverage</span>' +
+      '<span class="cv-count">' + (cov.length ? '<b>' + d.core_answered + '</b> / ' + d.core_total + ' answered · ' : '') +
+        '<a href="#" class="cv-rerun" onclick="analyze(true); return false;">↻ re-run</a></span></h3>' +
+    (cells ? '<div class="cv-rail">' + cells + '</div>' : '') +
+    '<p class="cv-note">' + note + '</p>' +
+  '</div>';
 }
 
 // IP summary: what it is, why flagged, what to do
