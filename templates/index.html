@@ -826,7 +826,7 @@ function ipAbuseKinds(d) {
 function ipqsBlock(d) {
   const q = d.ipqs;
   if (!q) return muted(keyOn('ipqs') ? 'No IPQualityScore data for this IP.' : 'Set IPQS_API_KEY to enable IPQualityScore.');
-  if (isErr(q)) return failNote(q) + (/quota/.test(q.error) ? muted("IPQS free tier is 5,000 lookups/month and resets monthly.") : "");
+  if (isErr(q)) return failNote(q) + (/quota/.test(q.error) ? muted("IPQS free tier allows 35 lookups/day and 1,000/month, shared across IP and email checks.") : "");
   const fs = q.fraud_score || 0;
   // Fuller anonymizer detail — IPQS flags proxy/vpn/tor separately, with an 'active' (live tunnel) state.
   const kinds = [];
