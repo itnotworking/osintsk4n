@@ -1122,8 +1122,8 @@ function urlscanBlock(u) {
   info += urlscanVerdictRows(u);
   info += kvrow("Recent scans", u.count || u.results.length);
   info += u.results.slice(0, 4).map(r =>
-    '<div class="scanrow"><span class="scan-url">' +
-    esc(r.url || "") + '</span><div class="muted" style="font-size:11px">' +
+    '<div class="scanrow"><a href="' + esc(safeUrl(r.result)) + '" target="_blank" rel="noopener">' +
+    esc(r.url || "") + '</a><div class="muted" style="font-size:11px">' +
     esc((r.time || "").slice(0, 10)) + '</div></div>').join("");
   info += '<div style="margin-top:20px">' + liveBtn('▶ Re-scan live') + '</div>';
   const danger = !!(u.redirect && u.redirect.offsite);
@@ -1149,8 +1149,10 @@ function urlscanVerdictRows(u) {
   return html;
 }
 
+// the screenshot and scan URLs open the full urlscan.io report, the only outside link on the page
 function shot(url, link, caption) {
-  return '<img src="' + esc(safeUrl(url)) + '" alt="page screenshot" loading="lazy">' +
+  return '<a href="' + esc(safeUrl(link || url)) + '" target="_blank" rel="noopener">' +
+    '<img src="' + esc(safeUrl(url)) + '" alt="page screenshot" loading="lazy"></a>' +
     (caption ? '<div class="us-cap">' + esc(caption) + '</div>' : '');
 }
 
@@ -1189,7 +1191,8 @@ async function runLiveScan() {
       if (res.ready) { finishBar(); await new Promise(r => setTimeout(r, 180)); renderLiveResult(res); return; }
     }
     clearInterval(timer);
-    body.innerHTML = '<div class="muted">Scan is taking longer than expected — try again in a minute.</div>' + liveBtn('▶ Re-scan live');
+    body.innerHTML = '<div class="muted">Scan is taking longer than expected. ' +
+      '<a href="https://urlscan.io/result/' + esc(sub.uuid) + '/" target="_blank" rel="noopener">View the report on urlscan.io ↗</a></div>' + liveBtn('▶ Re-scan live');
   } catch (e) {
     clearInterval(timer);
     body.innerHTML = '<div class="v bad">Live scan failed (network).</div>' + liveBtn('▶ Retry');
@@ -1200,7 +1203,7 @@ function renderLiveResult(res) {
   const body = $("urlscanBody");
   let info = '<div class="muted" style="font-size:11px;margin-bottom:12px">↻ Fresh scan · ' + esc((res.time || "").slice(0, 16).replace("T", " ")) + '</div>';
   info += withSource("urlscan.io", () => urlscanVerdictRows(res));
-  if (res.final_url) info += '<div class="scanrow"><span class="scan-url">' + esc(res.final_url) + '</span></div>';
+  if (res.final_url) info += '<div class="scanrow"><a href="' + esc(safeUrl(res.result)) + '" target="_blank" rel="noopener">' + esc(res.final_url) + '</a></div>';
   info += '<div style="margin-top:20px">' + liveBtn('▶ Re-scan live') + '</div>';
   const danger = !!(res.redirect && res.redirect.offsite);
   const shotHtml = res.screenshot ? shot(res.screenshot, res.result, res.final_url) : "";

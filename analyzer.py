@@ -828,7 +828,8 @@ def urlscan_search(domain):
             "submitted": task.get("url"),
             "time": task.get("time"),
             "screenshot": r.get("screenshot"),
-            "result": r.get("result"),
+            # search returns the API JSON URL; link the human-readable report page instead
+            "result": f"https://urlscan.io/result/{r['_id']}/" if r.get("_id") else r.get("result"),
             "uuid": r.get("_id"),
         })
 
