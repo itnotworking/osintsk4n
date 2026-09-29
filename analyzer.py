@@ -1579,6 +1579,31 @@ def check_dkim(domain):
 # Derived intelligence
 # --------------------------------------------------------------------------
 
+def human_age(days):
+    """Domain age in words, matching humanAge() in the page: 45 -> "6 weeks, 3 days", 196 -> "6 months, 2 weeks"."""
+    n = max(0, int(days))
+    unit = lambda v, u: f"{v} {u}" + ("" if v == 1 else "s")
+    if n < 1:
+        return "less than a day"
+    if n < 14:
+        return unit(n, "day")
+    if n < 60:
+        return unit(n // 7, "week") + (f", {unit(n % 7, 'day')}" if n % 7 else "")
+    if n < 365:
+        m = int(n // 30.44)
+        w = round((n - m * 30.44) / 7)
+        if w >= 4:
+            m, w = m + 1, 0
+        if m >= 12:
+            return "1 year"
+        return unit(m, "month") + (f", {unit(w, 'week')}" if w else "")
+    y = int(n // 365.25)
+    m = round((n - y * 365.25) / 30.44)
+    if m >= 12:
+        y, m = y + 1, 0
+    return unit(y, "year") + (f", {unit(m, 'month')}" if y < 5 and m else "")
+
+
 def domain_age(rdap):
     """Return (age_days, registration_date_str) from RDAP events."""
     if not rdap or not rdap.get("events"):
@@ -1952,12 +1977,12 @@ def score(result):
             flags.append({"cat": "New domain", "detail": f"registered {when}"})
         elif age_days < 30:
             pts += 28
-            reasons.append(f"Newly registered domain ({age_days}d old)")
-            flags.append({"cat": "New domain", "detail": f"registered {age_days}d ago"})
+            reasons.append(f"Newly registered domain: registered {human_age(age_days)} ago")
+            flags.append({"cat": "New domain", "detail": f"registered {human_age(age_days)} ago"})
         elif age_days < 90:
             pts += 14
-            reasons.append(f"Young domain ({age_days}d old)")
-            flags.append({"cat": "New domain", "detail": f"{age_days}d old"})
+            reasons.append(f"Young domain: registered {human_age(age_days)} ago")
+            flags.append({"cat": "New domain", "detail": f"{human_age(age_days)} old"})
 
     # Mail-auth only means something for a domain that actually sends mail. A provider's records say
     # nothing about one mailbox, and a hosting tenant (x.onrender.com) is a website, not a mail domain —
@@ -2524,7 +2549,7 @@ def build_summary(r):
     if r.get("registered"):
         age = r.get("age_days")
         lines.append(f"Domain:   registered {r['registered'][:10]}"
-                     + (f" ({age}d old)" if age is not None else ""))
+                     + (f" ({human_age(age)} old)" if age is not None else ""))
     if r.get("mx_provider"):
         lines.append(f"Mail:     {r['mx_provider']}")
     if r.get("kind") == "email":
