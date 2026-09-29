@@ -257,12 +257,12 @@ function freshDomainAlert(d) {
   let fig, unit, when;
   if (hours != null && hours < 24) {
     fig = hours < 1 ? "<1" : String(hours);
-    unit = hours === 1 ? "hour old" : "hours old";
+    unit = hours <= 1 ? "hour old" : "hours old";
     when = hours < 1 ? "less than an hour ago" : hours + (hours === 1 ? " hour ago" : " hours ago");
   } else {
     const n = d.age_days;
-    fig = String(n);
-    unit = n === 1 ? "day old" : "days old";
+    fig = n === 0 ? "<1" : String(n);
+    unit = n <= 1 ? "day old" : "days old";
     when = n === 0 ? "within the last day" : n + (n === 1 ? " day ago" : " days ago");
   }
   const stamp = r ? " (" + (timed ? r.slice(0, 16).replace("T", " ") + " UTC" : r.slice(0, 10)) + ")" : "";
