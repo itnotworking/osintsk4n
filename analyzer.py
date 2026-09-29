@@ -303,6 +303,22 @@ def registrable_domain(host):
     return last2
 
 
+def _invalid_ip_reason(s):
+    """Plain reason when something is shaped like an IP address but isn't a valid one, else None.
+    Without this, 999.1.1.1 was looked up as a domain and reported as unregistered."""
+    if "." in s and re.fullmatch(r"[\d.]+", s):
+        parts = s.split(".")
+        if len(parts) != 4 or not all(parts):
+            return (f"{s} is not a valid IP address. An IPv4 address is four numbers separated "
+                    f"by dots, like 8.8.8.8.")
+        if any(int(x) > 255 for x in parts):
+            return f"{s} is not a valid IP address. Each of the four numbers must be between 0 and 255."
+        return f"{s} is not a valid IP address. Numbers can't have leading zeros (use 1.2.3.4, not 01.2.3.4)."
+    if s.count(":") >= 2 and re.fullmatch(r"[0-9A-Za-z:.%]+", s):
+        return f"{s} is not a valid IPv6 address. Check for a typo or a character that isn't 0-9 or a-f."
+    return None
+
+
 def parse_target(raw):
     """
     Normalise arbitrary analyst input into a structured target.
@@ -351,6 +367,11 @@ def parse_target(raw):
             net = ipaddress.ip_network(value, strict=False)
         except ValueError:
             net = None
+        if net is None:
+            # without this, 1.2.3.0/33 fell through to the URL branch and was triaged as a web address
+            result["error"] = (f"{value} is not a valid CIDR range. The address must be a valid IP and the "
+                               f"prefix /0 to /32 for IPv4 (/0 to /128 for IPv6), like 203.0.113.0/24.")
+            return result
         if net is not None:
             if net.num_addresses > 256:
                 result["error"] = (
@@ -410,6 +431,12 @@ def parse_target(raw):
         is_ip = True
     except ValueError:
         pass
+
+    if not is_ip:
+        bad_ip = _invalid_ip_reason(domain)
+        if bad_ip:
+            result["error"] = bad_ip
+            return result
 
     if not is_ip and not _DOMAIN_RE.match(domain):
         # Allow IDN/punycode the regex rejects, but require a TLD dot
@@ -1888,9 +1915,9 @@ def score(result):
     # not in DNS → doesn't exist; don't score it like a real domain
     if result.get("unresolved"):
         return {
-            "score": 0, "verdict": "No DNS Record", "flags": [],
-            "reasons": ["Domain has no DNS records (no A / MX / NS) and no registration — it does not "
-                        "resolve and appears unregistered or inactive."],
+            "score": 0, "verdict": "Not In Use" if result.get("nx") == "registered" else "Domain Not Found",
+            "flags": [],
+            "reasons": [result.get("nx_summary") or "This domain has no DNS records, so it does not exist online."],
         }
 
     vt = result.get("vt")
@@ -2292,6 +2319,29 @@ def _analyze_ip(parsed, ip, raw_input):
     }
 
 
+def _nx_status(domain, reg_dom, kind):
+    """Why a name with no DNS records doesn't resolve, as (code, plain-English sentence):
+    a made-up domain ending, no such host under a real domain, not registered, or registered but unused."""
+    tld = domain.rsplit(".", 1)[-1]
+    if not dns_lookup(tld, "NS"):
+        code, why = "bad_tld", f".{tld} is not a real domain ending, so {domain} cannot exist."
+    elif domain != reg_dom and dns_lookup(reg_dom, "NS"):
+        code, why = "no_host", f"{domain} does not exist. {reg_dom} is a real domain, but nothing is set up at that name."
+    else:
+        st, _, _ = _api(f"https://rdap.org/domain/{quote(reg_dom)}", timeout=8)
+        if st == 200:
+            code, why = "registered", f"{reg_dom} is registered, but it is not in use. It has no DNS records."
+        elif st == 404:
+            code, why = "unregistered", f"{reg_dom} does not exist. Nobody has registered it."
+        else:
+            code, why = "unknown", f"{domain} does not exist online. It has no DNS records."
+    why += (" This address cannot send or receive email." if kind == "email"
+            else " It has no website and cannot send or receive email.")
+    if code != "registered":
+        why += " Check the spelling."
+    return code, why
+
+
 def _analyze_domain(parsed, domain, ip, raw_input):
     is_email = parsed["kind"] == "email"
     reg_dom = parsed["registrable"]
@@ -2302,7 +2352,7 @@ def _analyze_domain(parsed, domain, ip, raw_input):
     reg_or_host = domain if tenant else reg_dom
 
     # Phase 1 — fast DNS presence probe. No records of any kind → bail early
-    # with "No DNS Record" instead of running the slow sources.
+    # with "Domain Not Found" instead of running the slow sources.
     dns_fut = {
         "a":    _executor.submit(dns_lookup, domain, "A"),
         "aaaa": _executor.submit(dns_lookup, domain, "AAAA"),
@@ -2321,6 +2371,7 @@ def _analyze_domain(parsed, domain, ip, raw_input):
             "spf_parsed": None, "dmarc_parsed": None, "age_days": None, "registered": None,
             "mx_provider": None, "high_risk_tld": False,
             "unresolved": True,
+            **dict(zip(("nx", "nx_summary"), _nx_status(domain, reg_dom, parsed["kind"]))),
             "freemail": reg_dom in FREEMAIL_DOMAINS, "disposable": reg_dom in DISPOSABLE_DOMAINS,
             "is_provider": False, "provider_note": None,
             "is_platform": False, "platform_note": None,
@@ -2455,8 +2506,8 @@ def build_summary(r):
     lines = []
     lines.append(f"IOC:      {r['defanged']}  ({r['kind']})")
     if r.get("unresolved"):
-        lines.append(f"Verdict:  {r['verdict']} — does not resolve")
-        lines.append("DNS:      no A / MX / NS records; appears unregistered or inactive")
+        lines.append(f"Verdict:  {r['verdict']}")
+        lines.append(f"Status:   {r.get('nx_summary') or 'No DNS records, so it does not exist online.'}")
         return "\n".join(lines)
     lines.append(f"Verdict:  {r['verdict']}  (risk {r['score']}/100)")
     if r.get("ip"):

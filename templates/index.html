@@ -211,7 +211,7 @@ function lockTicketHeight() {
 }
 
 function verdictClass(v) {
-  return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious","No DNS Record":"neutral","Inconclusive":"neutral"})[v] || "low";
+  return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious","Domain Not Found":"neutral","Not In Use":"neutral","Inconclusive":"neutral"})[v] || "low";
 }
 
 // A source that errored is a failed lookup, never a clean result — render it that way everywhere.
@@ -253,7 +253,8 @@ function verdictBanner(d) {
   const ring = noScore ? "#8b8b96" : ringColor(d.score);
   const ringNum = noScore ? "—" : d.score;
   const pct = noScore ? 0 : d.score;
-  const sub = unresolved ? "does not resolve — no DNS records"
+  const sub = unresolved ? ({ bad_tld: "not a real domain ending", no_host: "no such host", unregistered: "not registered",
+                                registered: "registered, but no DNS records" })[d.nx] || "no DNS records"
     : inconclusive ? "incomplete — only " + d.core_answered + " of " + d.core_total + " core sources returned data"
     : ("risk " + d.score + "/100");
   const coverage = coverageRail(d, inconclusive);
@@ -392,12 +393,13 @@ function buildBrief(d) {
 
 function briefCore(d) {
   if (d.kind === "ip") return ipBrief(d);
+  if (d.unresolved && d.nx_summary) return d.nx_summary + " There is nothing to look up, and this is not a sign of malice on its own.";
   if (d.unresolved) {
     const what = (d.kind === "email" ? "email domain" : "domain") + " (" + d.defanged + ")";
-    return "This " + what + " has no DNS records — no A, MX, or NS entries and no registration — so it does not resolve and appears to be unregistered or inactive. " +
+    return "This " + what + " has no DNS records, so it does not exist online. " +
       (d.kind === "email"
         ? "Because the domain does not exist, this address cannot receive mail and is not a valid or deliverable sender."
-        : "It cannot currently host a website or receive email. This is not evidence of malice — the name simply is not live.");
+        : "It cannot host a website or receive email. This is not evidence of malice on its own.");
   }
   const plain = ({
     "Likely Malicious": "likely malicious", "Suspicious": "suspicious",
@@ -427,7 +429,7 @@ function cards(d) {
 
   // non-existent domain — the cards below are empty, so explain up front
   if (d.unresolved)
-    out.push(card("About this domain", '<pre class="muted" style="white-space:pre-wrap;margin:0">' + esc(d.defanged + " has no DNS records — no A, MX, or NS entries and no registration. It does not resolve and appears to be unregistered or inactive, so the details below are mostly empty. This is not evidence of malice — the name simply is not live.") + '</pre>'));
+    out.push(card("About this domain", '<pre class="muted" style="white-space:pre-wrap;margin:0">' + esc("There is nothing to look up for a name that doesn't exist online, so the details below are mostly empty.") + '</pre>'));
 
   // hosting-platform context: feed hits mean malware hosted here, not that the platform is bad
   if (!d.unresolved && d.is_platform && d.platform_note)
@@ -1303,7 +1305,7 @@ function recAction(d) {
 }
 
 function recActionCore(d) {
-  if (d.unresolved) return "No action needed on the name itself — it has no DNS records and does not resolve (appears unregistered or inactive). If it was expected to be live, double-check the spelling. If a message claimed to come from it, treat that claim as forged: the domain cannot send or receive mail.";
+  if (d.unresolved) return "No action is needed on the name itself, because it does not exist online. If it was expected to be live, double-check the spelling. If a message claimed to come from it, treat that claim as forged: the domain cannot send or receive mail.";
   if (d.kind === "hash") return ({
     "Likely Malicious": "Block this hash in EDR (CrowdStrike Falcon); hunt for the file across endpoints; quarantine/purge any email carrying it (Mimecast).",
     "Suspicious": "Detonate in a sandbox and monitor; block pending analysis if it arrived via email.",
@@ -1542,8 +1544,7 @@ function fmtSecurity(d) {
   L.push("Verdict:  " + d.verdict + riskTag(d));
   L.push("Analyzed: " + stampUTC() + cacheSuffix(d));
   if (d.unresolved) {
-    L.push("DNS:      no records (no A / MX / NS); no registration found");
-    L.push("Status:   does not resolve — appears unregistered or inactive");
+    L.push("Status:   " + (d.nx_summary || "No DNS records, so it does not exist online."));
     L.push("");
     L.push("Recommended action: " + recAction(d));
     return L.join("\n");
@@ -1643,10 +1644,10 @@ function stakeholderPoints(d) {
   if (d.kind === "cidr") return cidrPoints(d);
   if (d.kind === "hash") return hashPoints(d);
   if (d.unresolved) {
-    const p = ["This " + (d.kind === "email" ? "email domain" : "domain") + " has no DNS records (no A, MX, or NS) and no registration — it does not resolve and appears unregistered or inactive."];
+    const p = [d.nx_summary || "This " + (d.kind === "email" ? "email domain" : "domain") + " has no DNS records, so it does not exist online."];
     p.push(d.kind === "email"
       ? "Because the domain does not exist, the address cannot receive mail and is not a valid sender."
-      : "It cannot host a website or receive email right now. This is not malicious in itself — the name simply is not live.");
+      : "This is not malicious on its own. The name simply isn't live.");
     return p;
   }
   const pts = [];
@@ -1701,7 +1702,7 @@ function stakeholderPoints(d) {
 function riskRating(d) {
   return ({
     "Likely Malicious": "HIGH", "Suspicious": "ELEVATED",
-    "Low–Moderate": "LOW–MODERATE", "Likely Legitimate": "LOW", "No DNS Record": "N/A",
+    "Low–Moderate": "LOW–MODERATE", "Likely Legitimate": "LOW", "Domain Not Found": "N/A", "Not In Use": "N/A",
     "Inconclusive": "UNKNOWN (incomplete lookup)"
   })[d.verdict] || "UNKNOWN";
 }
@@ -1731,7 +1732,7 @@ function fmtExecutive(d) {
     "Suspicious": "This domain shows warning signs and should be treated with caution pending a brief investigation.",
     "Low–Moderate": "This domain carries limited risk. Normal precautions and monitoring are sufficient.",
     "Likely Legitimate": "This domain appears legitimate and poses no significant risk to the organization at this time."
-  })[d.verdict] || (d.unresolved ? "This name has no DNS records and does not resolve — it appears unregistered or inactive, and cannot host a website or send/receive mail." : d.verdict === "Inconclusive" ? "Not enough evidence to assess this asset — key intelligence sources didn't respond at the time of the check. It should not be treated as safe until re-checked." : "Manual review required.");
+  })[d.verdict] || (d.unresolved ? (d.nx_summary || "This name has no DNS records, so it does not exist online and cannot host a website or send or receive mail.") : d.verdict === "Inconclusive" ? "Not enough evidence to assess this asset — key intelligence sources didn't respond at the time of the check. It should not be treated as safe until re-checked." : "Manual review required.");
   const decision = (hash ? {
     "Likely Malicious": "Authorize blocking the hash in EDR and purging any email carrying the file.",
     "Suspicious": "Approve sandbox analysis and containment before the file is used.",
@@ -1786,13 +1787,13 @@ function fmtEndUser(d) {
     "Suspicious": "⚠ This looks SUSPICIOUS — be very careful.",
     "Low–Moderate": "This is probably okay, but stay alert.",
     "Likely Legitimate": "✓ This looks SAFE."
-  })[d.verdict] || (d.unresolved ? "This name doesn't exist online — it has no records at all." : d.verdict === "Inconclusive" ? "We couldn't finish checking this — don't open or click it yet, and check with IT Security." : "Unable to determine — check with IT Security.");
+  })[d.verdict] || (d.unresolved ? "This name doesn't exist online." : d.verdict === "Inconclusive" ? "We couldn't finish checking this — don't open or click it yet, and check with IT Security." : "Unable to determine — check with IT Security.");
   if (d.unresolved) {
     return ["IS THIS SAFE?", "", "We checked: " + d.defanged, "", "Result: " + result, "",
-      "In plain terms: This web/email name isn't set up on the internet — there's nothing there. It can't host a real website or send or receive email.",
-      "", "Recommended action — what you should do:",
+      "In plain terms: " + (d.nx_summary || "This web or email name isn't set up on the internet, so there's nothing there. It can't host a real website or send or receive email."),
+      "", "What you should do:",
       "• If you typed it yourself, double-check the spelling.",
-      "• If an email or message said it came from this name, be suspicious — a name that doesn't exist can't really send mail, so the sender was likely faked.",
+      "• If an email or message said it came from this name, be suspicious. A name that doesn't exist can't really send mail, so the sender was likely faked.",
       "• When in doubt, forward it to IT Security rather than replying or clicking."].join("\n");
   }
   const plain = (d.kind === "hash" ? {
