@@ -1943,7 +1943,14 @@ def score(result):
 
     age_days = result.get("age_days")
     if age_days is not None and not provider:
-        if age_days < 30:
+        if age_days <= 7:
+            # a week old or less is one of the strongest phishing signals, so it is at least Suspicious on its
+            # own (35 ≥ the 30-point line); the UI shows a matching alert, which must never sit under a low verdict
+            pts += 35
+            when = "less than a day ago" if age_days < 1 else f"{age_days} day{'s' if age_days != 1 else ''} ago"
+            reasons.append(f"Newly registered domain: registered {when}")
+            flags.append({"cat": "New domain", "detail": f"registered {when}"})
+        elif age_days < 30:
             pts += 28
             reasons.append(f"Newly registered domain ({age_days}d old)")
             flags.append({"cat": "New domain", "detail": f"registered {age_days}d ago"})

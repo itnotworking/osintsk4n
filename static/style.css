@@ -384,6 +384,17 @@ a:hover { color: #b9c0f0; text-decoration: underline; }
 /* a note that needs setting apart without an alarm colour */
 .ruled-note { color: var(--text); line-height: 1.6; padding-left: 12px; border-left: 2px solid var(--divider); }
 .muted { color: var(--muted); }
+/* ---- newly registered domain: the age as a red figure, a red rule, then the why ---- */
+.fresh-alert { display: flex; align-items: center; gap: 18px; padding: 22px 0 24px; border-top: 2px solid var(--divider); }
+.fa-age { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-start; line-height: 1; min-width: 58px; }
+.fa-age b { font-size: 36px; font-weight: 800; color: var(--crit); font-variant-numeric: tabular-nums; letter-spacing: -1px; }
+.fa-age span { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--faint); margin-top: 7px; white-space: nowrap; }
+.fa-text {
+  font-size: 13px; line-height: 1.65; color: var(--muted); max-width: 940px;
+  padding-left: 18px; border-left: 2px solid rgba(233,106,106,0.55);
+}
+.fa-text b { color: var(--text); font-weight: 600; }
+.fa-title { font-size: 12.5px; letter-spacing: 1px; text-transform: uppercase; color: #f0adad; font-weight: 700; margin-bottom: 4px; }
 /* ---- source coverage rail: one segment per core source, solid = answered, hatched = no answer ---- */
 .coverage { padding: 22px 0 24px; border-top: 2px solid var(--divider); }
 .coverage h3 {
