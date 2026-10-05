@@ -1993,6 +1993,21 @@ function renderRecent() {
 function runRecent(t) { $("target").value = t; toggleClear(); analyze(); }
 function clearRecent() { try { localStorage.removeItem(RECENT_KEY); } catch (e) {} renderRecent(); }
 renderRecent();
+
+/* ---------- deep link: sc4n.lol/#q=<target> fills the box and runs the search ----------
+   Used by other tools (e.g. Typowatch's "Scan" button). The target is in the fragment, so it
+   never reaches server logs; it only goes into the input's value, never into HTML. */
+(function () {
+  const m = location.hash.match(/^#q=(.+)$/);
+  if (!m) return;
+  let t = "";
+  try { t = decodeURIComponent(m[1]).trim().slice(0, 2048); } catch (e) { return; }
+  history.replaceState(null, "", location.pathname + location.search); // a reload shouldn't search again
+  if (!t) return;
+  $("target").value = t;
+  toggleClear();
+  analyze();
+})();
 </script>
 
 </body>
