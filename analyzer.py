@@ -17,10 +17,16 @@ import functools
 import threading
 import ipaddress
 import datetime as dt
+import csv
+import io
+import bisect
+from array import array
 from urllib.parse import urlparse, quote
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
+import phonenumbers
+from phonenumbers import carrier as _pn_carrier, geocoder as _pn_geo, timezone as _pn_tz
 
 def _key(name):
     # keys pasted into a dashboard often pick up stray whitespace, newlines or quotes — the API then
@@ -319,6 +325,20 @@ def _invalid_ip_reason(s):
     return None
 
 
+_PHONE_SHAPE = re.compile(r"\+?[\d ().\-]{7,24}")
+
+
+def _phone_candidate(v):
+    """The input if it is shaped like a phone number (digits with + ( ) . - or spaces), else None.
+    A dotted quad like 8.8.8.8 stays an IP; 813.378.3150 is a phone number."""
+    v = v.strip()
+    if v.lower().startswith("tel:"):
+        v = v[4:].strip()
+    if not _PHONE_SHAPE.fullmatch(v) or re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", v):
+        return None
+    return v if 7 <= len(re.sub(r"\D", "", v)) <= 15 else None
+
+
 def parse_target(raw):
     """
     Normalise arbitrary analyst input into a structured target.
@@ -341,6 +361,22 @@ def parse_target(raw):
         return result
 
     value = refang(raw)
+
+    # Phone number: read as a US number unless it starts with + and a country code
+    phone_raw = _phone_candidate(value)
+    if phone_raw:
+        try:
+            num = phonenumbers.parse(phone_raw, "US")
+        except phonenumbers.NumberParseException:
+            num = None
+        if num is None or not phonenumbers.is_valid_number(num):
+            result["error"] = (f"{raw} is not a valid phone number. Numbers without a country code are read as "
+                               f"US numbers; for others, start with + and the country code, like +44 20 7946 0958.")
+            return result
+        e164 = phonenumbers.format_number(num, phonenumbers.PhoneNumberFormat.E164)
+        result.update({"ok": True, "kind": "phone", "normalized": e164, "domain": e164, "registrable": e164,
+                       "phone": e164, "subdomain": False, "is_ip": False})
+        return result
 
     # Reject obvious header-injection / control characters.
     if any(c in value for c in ("\r", "\n", "\0", " ")) and "@" not in value:
@@ -1288,6 +1324,158 @@ def blocklist_lookup(ip):
 _executor.submit(lambda: blocklist_lookup("0.0.0.0"))
 
 
+# --------------------------------------------------------------------------
+# Phone numbers: parsed locally (Google libphonenumber) and matched against the FTC's Do Not Call /
+# robocall complaint files, published each weekday. The FTC API can't look up one number, so the last
+# FTC_WINDOW_DAYS of files are downloaded and packed per number into two sorted arrays (~6 MB for
+# ~400k numbers) and searched with bisect.
+# --------------------------------------------------------------------------
+_LINE_TYPES = {
+    phonenumbers.PhoneNumberType.FIXED_LINE: "Landline",
+    phonenumbers.PhoneNumberType.MOBILE: "Mobile",
+    phonenumbers.PhoneNumberType.FIXED_LINE_OR_MOBILE: "Landline or mobile",
+    phonenumbers.PhoneNumberType.TOLL_FREE: "Toll-free",
+    phonenumbers.PhoneNumberType.PREMIUM_RATE: "Premium rate",
+    phonenumbers.PhoneNumberType.SHARED_COST: "Shared cost",
+    phonenumbers.PhoneNumberType.VOIP: "VoIP",
+    phonenumbers.PhoneNumberType.PERSONAL_NUMBER: "Personal number",
+    phonenumbers.PhoneNumberType.PAGER: "Pager",
+    phonenumbers.PhoneNumberType.UAN: "Company number",
+    phonenumbers.PhoneNumberType.VOICEMAIL: "Voicemail",
+}
+
+
+def phone_info(num):
+    """What the number itself says: country, region, line type, original carrier, time zones."""
+    zones = [z for z in _pn_tz.time_zones_for_number(num) if z != "Etc/Unknown"]
+    return {
+        "e164": phonenumbers.format_number(num, phonenumbers.PhoneNumberFormat.E164),
+        "international": phonenumbers.format_number(num, phonenumbers.PhoneNumberFormat.INTERNATIONAL),
+        "national": phonenumbers.format_number(num, phonenumbers.PhoneNumberFormat.NATIONAL),
+        "country_code": num.country_code,
+        "region": phonenumbers.region_code_for_number(num),
+        "location": _pn_geo.description_for_number(num, "en") or None,
+        "line_type": _LINE_TYPES.get(phonenumbers.number_type(num)),
+        "carrier": _pn_carrier.name_for_number(num, "en") or None,
+        "timezones": zones[:3],
+    }
+
+
+FTC_DNC_URL = "https://www.ftc.gov/sites/default/files/DNC_Complaint_Numbers_{}.csv"
+FTC_UA = "osintsk4n/2.0 (+https://sc4n.lol)"   # the FTC returns 404 to agents without a contact URL
+FTC_WINDOW_DAYS = 60
+FTC_CHECK_EVERY = 6 * 3600   # how often to look for a newer daily file
+_FTC_EPOCH = dt.date(2020, 1, 1)
+# topics that describe scams rather than unwanted telemarketing
+_FTC_SCAM_TOPICS = ("pretending to be", "lotteries", "technical support")
+# data = (sorted numbers, packed values, topic names, first file date, last file date)
+_ftc = {"data": None, "checked": 0.0, "loading": False, "error": None}
+_ftc_lock = threading.Lock()
+
+
+def _ftc_file(day):
+    """One day's complaint CSV, or None (weekends, holidays and not-yet-published days have no file)."""
+    try:
+        r = requests.get(FTC_DNC_URL.format(day), headers={"User-Agent": FTC_UA}, timeout=60)
+    except Exception:
+        return None
+    return r.text if r.status_code == 200 and r.text.startswith("Company_Phone_Number") else None
+
+
+def _refresh_ftc():
+    """Rebuild the complaint index when the FTC has published a file newer than the one we hold.
+    Each number packs: complaints (16 bits) | robocalls (16) | latest complaint day (16) |
+    latest topic (7) | scam-topic complaints (9, capped at 511)."""
+    today = dt.datetime.now(dt.timezone.utc).date()
+    data = _ftc["data"]
+    if data:
+        newer = [today - dt.timedelta(days=b) for b in range((today - data[4]).days)]
+        if not any(d.weekday() < 5 and _ftc_file(d) for d in newer):
+            return   # nothing new published yet
+    packed, topics, tidx = {}, [], {}
+    first = last = None
+    for back in range(FTC_WINDOW_DAYS + 1):
+        day = today - dt.timedelta(days=back)
+        if day.weekday() >= 5:
+            continue
+        text = _ftc_file(day)
+        if not text:
+            continue
+        last = last or day
+        first = day
+        for row in csv.reader(io.StringIO(text)):
+            if len(row) < 8 or not row[0].isdigit():
+                continue
+            digits = row[0][1:] if len(row[0]) == 11 and row[0][0] == "1" else row[0]
+            if len(digits) != 10:
+                continue   # the files carry some malformed numbers; NANP national numbers are 10 digits
+            try:
+                when = (dt.date.fromisoformat(row[1][:10]) - _FTC_EPOCH).days
+            except ValueError:
+                continue
+            topic = " ".join((row[6] or "No Subject Provided").split())
+            t = tidx.get(topic)
+            if t is None:
+                t = tidx[topic] = min(len(topics), 127)
+                topics.append(topic)
+            n = int(digits)
+            old = packed.get(n, 0)
+            cnt = min((old & 0xFFFF) + 1, 0xFFFF)
+            robo = min(((old >> 16) & 0xFFFF) + (row[7] == "Y"), 0xFFFF)
+            latest, ltopic = (old >> 32) & 0xFFFF, (old >> 48) & 0x7F
+            if when >= latest:
+                latest, ltopic = when, t
+            scam = min((old >> 55) + any(k in topic.lower() for k in _FTC_SCAM_TOPICS), 511)
+            packed[n] = cnt | robo << 16 | latest << 32 | ltopic << 48 | scam << 55
+    if not packed:
+        _ftc["error"] = "complaint data unavailable"
+        return
+    keys = array("q", sorted(packed))
+    vals = array("Q", (packed[k] for k in keys))
+    _ftc["data"] = (keys, vals, topics, first, last)   # one assignment, so readers never see a half-swap
+    _ftc["error"] = None
+
+
+def _ftc_refresh_async():
+    with _ftc_lock:
+        if _ftc["loading"] or time.time() - _ftc["checked"] < FTC_CHECK_EVERY:
+            return
+        _ftc["loading"], _ftc["checked"] = True, time.time()
+
+    def run():
+        try:
+            _refresh_ftc()
+        finally:
+            _ftc["loading"] = False
+    threading.Thread(target=run, daemon=True).start()
+
+
+def ftc_lookup(num):
+    """FTC Do Not Call / robocall complaints about calls from this number in the loaded window.
+    The FTC records +1 numbers (US, Canada, Caribbean) only."""
+    if num.country_code != 1:
+        return {"not_covered": True}
+    _ftc_refresh_async()
+    data = _ftc["data"]
+    if not data:
+        return {"error": "complaint data still loading" if _ftc["loading"] else (_ftc["error"] or "complaint data unavailable")}
+    keys, vals, topics, first, last = data
+    out = {"complaints": 0, "window_from": first.isoformat(), "window_to": last.isoformat()}
+    i = bisect.bisect_left(keys, num.national_number)
+    if i < len(keys) and keys[i] == num.national_number:
+        v = vals[i]
+        out.update({
+            "complaints": v & 0xFFFF, "robocalls": (v >> 16) & 0xFFFF,
+            "latest": (_FTC_EPOCH + dt.timedelta(days=(v >> 32) & 0xFFFF)).isoformat(),
+            "latest_topic": topics[(v >> 48) & 0x7F], "scam_complaints": v >> 55,
+        })
+    return out
+
+
+# load the complaint index at startup (in the background; it takes ~25 s)
+_ftc_refresh_async()
+
+
 @_cached
 def proxycheck_ip(ip):
     """proxycheck.io — proxy/VPN/Tor detection, risk score, and attacks seen by its honeypots."""
@@ -1918,8 +2106,40 @@ def score_hash(result):
     return {"score": pts, "verdict": verdict, "reasons": reasons, "flags": []}
 
 
+def score_phone(result):
+    """Complaints are consumer reports, not proof, and most are unwanted telemarketing rather than scams.
+    So: one complaint is Low–Moderate, a pattern is Suspicious, and only many complaints that include a
+    scam topic reach Likely Malicious. No signals at all is "No Reports Found", never "legitimate"."""
+    pts, reasons, flags = 0, [], []
+    f = result.get("ftc") or {}
+    n = f.get("complaints") or 0
+    if n:
+        pts += 45 if n >= 10 else (30 if n >= 2 else 15)
+        reasons.append(f"Reported in {n} consumer complaint{'s' if n != 1 else ''} about unwanted calls "
+                       f"between {f['window_from']} and {f['window_to']} (unverified reports)")
+        flags.append({"cat": "Reported caller", "detail": f"{n} complaint{'s' if n != 1 else ''}"})
+        k = f.get("scam_complaints") or 0
+        # a stray miscategorised report shouldn't turn a telemarketer into a scammer: a quarter or more must be scams
+        if k and k * 4 >= n:
+            pts += 20
+            reasons.append(f"{k} of {n} complaints describe scams (impersonation, prizes or tech support)")
+            flags.append({"cat": "Scam reports", "detail": f"{k} of {n} complaints"})
+        if f.get("robocalls", 0) * 2 >= n:
+            reasons.append(f"{f['robocalls']} of {n} complaints describe robocalls (recorded messages)")
+    if (result.get("phone") or {}).get("line_type") == "Premium rate":
+        pts += 25
+        reasons.append("Premium-rate number: calling it costs the caller money, a common callback-scam trick")
+        flags.append({"cat": "Premium rate", "detail": "costs the caller to dial"})
+    if not pts:
+        return {"score": 0, "verdict": "No Reports Found", "flags": [], "reasons": reasons}
+    pts, verdict = _verdict_from(pts)
+    return {"score": pts, "verdict": verdict, "flags": flags, "reasons": reasons}
+
+
 def score(result):
     """Weighted risk scoring → verdict + reasons + BEC tags."""
+    if result.get("kind") == "phone":
+        return score_phone(result)
     if result.get("kind") == "hash":
         return score_hash(result)
     if result.get("kind") == "cidr":
@@ -2162,7 +2382,7 @@ SOURCE_LABELS = {
     "threatfox": "ThreatFox", "urlhaus": "URLhaus", "mb": "MalwareBazaar",
     "proxycheck": "proxycheck.io", "blocklists": "Public blocklists", "shodan": "Exposure scan", "gsb": "Safe Browsing", "urlscan": "urlscan.io",
     "hybrid": "Hybrid Analysis", "triage": "Hatching Triage",
-    "hudsonrock": "Hudson Rock", "xon": "XposedOrNot",
+    "hudsonrock": "Hudson Rock", "xon": "XposedOrNot", "ftc": "Consumer complaints (FTC)",
 }
 
 # The sources a clean verdict actually rests on, per indicator type.
@@ -2172,6 +2392,7 @@ CORE_SOURCES = {
     "domain": ("vt", "gsb", "threatfox", "urlhaus", "otx", "urlscan"),
     "email": ("vt", "gsb", "threatfox", "urlhaus", "otx", "ipqs", "hudsonrock", "xon"),
     "provider_email": ("ipqs", "hudsonrock", "xon"),
+    "phone": ("ftc",),
 }
 
 
@@ -2228,7 +2449,7 @@ def _flag_degraded(result):
                            "error": (result.get(k) or {}).get("error") if isinstance(result.get(k), dict) else "no answer"}
                           for k in core]
     # positive findings from the sources that did answer still stand; only a would-be "clean" call is withheld
-    if core and len(answered) * 2 < len(core) and result.get("verdict") in ("Likely Legitimate", "Low–Moderate"):
+    if core and len(answered) * 2 < len(core) and result.get("verdict") in ("Likely Legitimate", "Low–Moderate", "No Reports Found"):
         result["verdict"] = "Inconclusive"
         result["reasons"] = [f"Only {len(answered)} of {len(core)} core intel sources returned usable data — "
                              f"not enough evidence to call this clean"] + (result.get("reasons") or [])
@@ -2248,6 +2469,14 @@ def analyze(raw_input, fresh=False):
         return {"ok": False, "input": raw_input,
                 "error": "That is a private, loopback, or reserved IP — there is nothing to triage "
                          "against public threat-intelligence sources."}
+
+    if parsed["kind"] == "phone":
+        result = _analyze_phone(parsed, raw_input)
+        result.update(score(result))
+        _flag_degraded(result)
+        result["ticket_summary"] = build_summary(result)
+        result["keys"], result["cache_age_s"] = {}, 0
+        return result
 
     ip = domain if is_ip else resolve_ip(domain)
     if fresh:
@@ -2277,6 +2506,14 @@ def analyze(raw_input, fresh=False):
     ages = [v.get("_age") for v in result.values() if isinstance(v, dict) and v.get("_age") is not None]
     result["cache_age_s"] = max(ages) if ages else 0
     return result
+
+
+def _analyze_phone(parsed, raw_input):
+    num = phonenumbers.parse(parsed["phone"])
+    info = phone_info(num)
+    return {"ok": True, "kind": "phone", "input": raw_input, "domain": parsed["phone"],
+            "registrable": parsed["phone"], "is_ip": False, "defanged": info["international"],
+            "phone": info, "ftc": ftc_lookup(num)}
 
 
 def _analyze_hash(parsed, raw_input):
@@ -2527,8 +2764,26 @@ def _analyze_domain(parsed, domain, ip, raw_input):
     return result
 
 
+def build_phone_summary(r):
+    p, f = r.get("phone") or {}, r.get("ftc") or {}
+    lines = [f"IOC:      {p.get('international') or r.get('domain')}  (phone)",
+             f"Verdict:  {r['verdict']}" + (f"  (risk {r['score']}/100)" if r.get("score") else "")]
+    lines.append(f"Number:   {p.get('location') or p.get('region') or '?'} · {p.get('line_type') or 'unknown line type'}"
+                 + (f" · originally {p['carrier']}" if p.get("carrier") else ""))
+    if f.get("not_covered"):
+        lines.append("Reports:  complaint data covers +1 (US and Canada) numbers only")
+    elif not f.get("error"):
+        lines.append(f"Reports:  {f.get('complaints', 0)} FTC consumer complaint(s), {f.get('window_from')} to {f.get('window_to')}"
+                     + (f"; latest {f['latest']} ({f['latest_topic']})" if f.get("complaints") else ""))
+    if r.get("reasons"):
+        lines.append("Signals:  " + " | ".join(r["reasons"]))
+    return "\n".join(lines)
+
+
 def build_summary(r):
     """Analyst-ready, copy-paste block (defanged) for case notes."""
+    if r.get("kind") == "phone":
+        return build_phone_summary(r)
     if r.get("kind") == "hash":
         return build_hash_summary(r)
     if r.get("kind") == "cidr":

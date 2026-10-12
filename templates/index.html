@@ -24,13 +24,13 @@
 
 <div class="wrap">
   <form class="search" onsubmit="event.preventDefault(); analyze();">
-    <input id="target" placeholder="domain, IP, CIDR, URL, email, or file hash — defanged is fine" autocomplete="off" autofocus oninput="toggleClear()">
+    <input id="target" placeholder="domain, IP, URL, email, phone number, file hash or CIDR. Defanged is fine" autocomplete="off" autofocus oninput="toggleClear()">
     <button id="clearBtn" type="button" class="clear" title="Clear" aria-label="Clear search" onclick="clearTarget()" hidden>&times;</button>
     <button id="analyzeBtn" type="button" onclick="toggleSearch()">Analyze</button>
   </form>
   <p class="hint">
-    Accepts domains, IPs, URLs, emails, file hashes, and CIDR ranges — defanged IOCs
-    like <code>hxxp</code>, <code>[.]</code>, and <code>[at]</code> are auto-refanged.
+    Accepts domains, IPs, URLs, emails, phone numbers, file hashes and CIDR ranges. Defanged IOCs
+    like <code>hxxp</code>, <code>[.]</code> and <code>[at]</code> are refanged automatically.
   </p>
 
   <div id="recent" class="recent"></div>
@@ -211,7 +211,7 @@ function lockTicketHeight() {
 }
 
 function verdictClass(v) {
-  return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious","Domain Not Found":"neutral","Not In Use":"neutral","Inconclusive":"neutral"})[v] || "low";
+  return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious","Domain Not Found":"neutral","Not In Use":"neutral","No Reports Found":"neutral","Inconclusive":"neutral"})[v] || "low";
 }
 
 // A source that errored is a failed lookup, never a clean result — render it that way everywhere.
@@ -224,7 +224,7 @@ function srcErrNames(d) { return (d.source_errors || []).map(e => e.source); }
 // ticket audit trail: say when some sources were reused from the cache rather than fetched now
 function cacheSuffix(d) { return d.cache_age_s > 0 ? "  (some sources cached, up to " + Math.max(1, Math.round(d.cache_age_s / 60)) + " min old)" : ""; }
 // a risk score is meaningless when the lookup failed or the name doesn't exist
-function riskTag(d) { return (d.unresolved || d.verdict === "Inconclusive") ? "" : "  (risk " + d.score + "/100)"; }
+function riskTag(d) { return (d.unresolved || d.verdict === "Inconclusive" || d.verdict === "No Reports Found") ? "" : "  (risk " + d.score + "/100)"; }
 function ringColor(score) {
   if (score >= 80) return "#ff2d2d";   // severe red
   if (score >= 60) return "#f85149";   // red
@@ -235,6 +235,9 @@ function ringColor(score) {
 
 // tooltip text per risk-flag category
 const FLAG_TIPS = {
+  "Reported caller": "Consumers filed complaints about unwanted calls from this number. Reports are unverified and caller ID can be faked.",
+  "Scam reports": "At least a quarter of the complaints describe scams (impersonation, prizes or tech support) rather than telemarketing.",
+  "Premium rate": "Calling this number charges the caller, a common way callback scams make money.",
   "Shared host": "A user-created site on a free/shared hosting platform (Render, Vercel, Netlify, Fly.io…). Anyone can spin one up in minutes and they're heavily abused for phishing — the platform's age and reputation say nothing about this specific site.",
   "Compromised": "This exact address appears in infostealer-malware logs — its saved credentials were stolen, so the account may be hijacked and used to send malicious mail.",
   "Spoofable": "Weak email authentication (SPF/DKIM/DMARC) lets attackers forge mail from this domain — the basis of Business Email Compromise (BEC).",
@@ -298,13 +301,15 @@ function verdictBanner(d) {
   const cls = verdictClass(d.verdict);
   const unresolved = !!d.unresolved;               // no DNS → no risk score
   const inconclusive = d.verdict === "Inconclusive";
-  const noScore = unresolved || inconclusive;
+  const noReports = d.verdict === "No Reports Found";   // a phone number nobody has complained about
+  const noScore = unresolved || inconclusive || noReports;
   const ring = noScore ? "#8b8b96" : ringColor(d.score);
   const ringNum = noScore ? "—" : d.score;
   const pct = noScore ? 0 : d.score;
   const sub = unresolved ? ({ bad_tld: "not a real domain ending", no_host: "no such host", unregistered: "not registered",
                                 registered: "registered, but no DNS records" })[d.nx] || "no DNS records"
     : inconclusive ? "incomplete — only " + d.core_answered + " of " + d.core_total + " core sources returned data"
+    : noReports ? ((d.ftc || {}).not_covered ? "complaint data covers +1 numbers only" : "no complaints in the data window")
     : ("risk " + d.score + "/100");
   const coverage = coverageRail(d, inconclusive);
   const tags = (d.flags || []).map(f => {
@@ -441,7 +446,101 @@ function buildBrief(d) {
   return s;
 }
 
+// ---------- phone numbers ----------
+const LINE_TYPE_TIPS = {
+  "Landline or mobile": "US and Canadian numbers can't be told apart as landline or mobile from the number alone. That takes a live carrier lookup.",
+  "Toll-free": "Real businesses use toll-free numbers, and so do fake invoice, refund and tech-support scams, because they look official.",
+  "Premium rate": "Calling it charges the caller, often heavily. Scam texts and emails use these to bill victims who call back.",
+  "VoIP": "An internet phone number. Easy to get online and common in scams, though many businesses use them too.",
+  "Mobile": "A mobile number.",
+  "Landline": "A fixed landline number.",
+};
+const COMPLAINT_CAVEAT = "Consumer complaints about unwanted calls from this number. They are not verified, and scammers can fake a real number's caller ID, so complaints can name an innocent business. Callback numbers printed in an email or text are more reliable, because victims really dial them.";
+
+function phoneCards(d) {
+  const p = d.phone || {}, out = [];
+  out.push(card("Number", withSource("Google libphonenumber", () =>
+    kvrow("Number", p.international || d.domain, "", "", null) +
+    kvrow("Country", [p.location, p.region].filter(Boolean).join(" · ") || "?", "",
+      "Where the number is registered, from its country and area code. It says where the number belongs, not where the caller is.") +
+    kvrow("Line type", p.line_type || "unknown", p.line_type === "Premium rate" ? "bad" : "", LINE_TYPE_TIPS[p.line_type] || "") +
+    (p.carrier ? kvrow("Original carrier", p.carrier, "",
+      "The carrier the number was first issued to. Numbers can move to another carrier, so this may not be the current one.") : "") +
+    (p.timezones && p.timezones.length ? kvrow("Time zone", p.timezones.join(", ")) : "")
+  )));
+  out.push(card("Complaint Reports", withSource("FTC Do Not Call complaint data", () => complaintBlock(d.ftc || {}))));
+  return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
+}
+
+function complaintBlock(f) {
+  if (f.not_covered) return muted("Complaint data covers +1 numbers only (US, Canada and the Caribbean), so there are no reports to check for this number.");
+  if (isErr(f)) return failNote(f);
+  const n = f.complaints || 0, k = f.scam_complaints || 0;
+  const win = kvrow("Data window", f.window_from + " to " + f.window_to, "",
+    "The complaint files checked, by the date each complaint was filed. Updated every weekday.");
+  if (!n) return kvrow("Complaints", "none", "", COMPLAINT_CAVEAT) + win +
+    muted("No complaints found. That doesn't make the number safe: scam numbers change often and many are never reported.");
+  return kvrow("Complaints", String(n), n >= 10 ? "bad" : "warn", COMPLAINT_CAVEAT) +
+    (k ? kvrow("Scam reports", k + " of " + n, k * 4 >= n ? "bad" : "warn",
+      "Complaints filed as impersonation (pretending to be government, a business or family), prizes and sweepstakes, or tech support. The rest are mostly unwanted telemarketing.") : "") +
+    kvrow("Robocalls", (f.robocalls || 0) + " of " + n, "", "Complaints describing a recorded message rather than a live caller.") +
+    kvrow("Latest report", f.latest + (f.latest_topic ? " · " + f.latest_topic : ""), "", "The most recent complaint and the topic the consumer chose.") +
+    win;
+}
+
+// one sentence each: what the number is, what complaints say, what to do
+function phoneSentences(d) {
+  const p = d.phone || {}, f = d.ftc || {}, n = f.complaints || 0, k = f.scam_complaints || 0;
+  const line = p.line_type ? (p.line_type === "VoIP" ? "VoIP" : p.line_type.toLowerCase()) : "";
+  const what = "This phone number (" + (p.international || d.domain) + ") is " +
+    (line ? "a " + line + (/number$/.test(line) ? "" : " number") : "a valid number") +
+    (p.location ? " registered in " + p.location.replace(/\.$/, "") : "") + ".";   // "Washington D.C." already ends in a period
+  let reports;
+  if (f.not_covered) reports = "Complaint data only covers +1 numbers (US and Canada), so there are no reports to check. Judge it by the call or message it came with.";
+  else if (isErr(f)) reports = "Complaint data couldn't be checked for this lookup, so this is not a clean result.";
+  else if (!n) reports = "No consumer complaints about calls from it were filed between " + f.window_from + " and " + f.window_to + ". That doesn't make it safe: scam numbers change often and many are never reported.";
+  else reports = "It was named in " + n + " consumer complaint" + (n === 1 ? "" : "s") + " about unwanted calls between " + f.window_from + " and " + f.window_to +
+    (k * 4 >= n && k ? ", " + k + " of them about scams such as impersonation" : "") +
+    ((f.robocalls || 0) * 2 >= n ? ", mostly robocalls" : "") + ". Complaints are unverified, and caller ID can be faked.";
+  const extra = p.line_type === "Premium rate" ? "Calling it costs the caller money, a common callback-scam trick."
+    : p.line_type === "Toll-free" ? "Toll-free numbers are used by real businesses and by fake invoice and tech-support scams alike." : "";
+  return [what, reports, extra].filter(Boolean);
+}
+
+function phoneBrief(d) {
+  const posture = ({
+    "Likely Malicious": "Treat it as a scam line: don't call it back, and block it.",
+    "Suspicious": "Don't call it back. Verify the claimed caller through a number you already trust.",
+    "Low–Moderate": "Be cautious, and verify the caller through a number you already trust.",
+    "No Reports Found": "Still verify any caller asking for payment, passwords or codes through a number you already trust.",
+    "Inconclusive": "The check was incomplete, so don't treat it as safe."
+  })[d.verdict] || "";
+  return phoneSentences(d).concat(posture ? [posture] : []).join(" ");
+}
+
+function phonePoints(d) { return phoneSentences(d).slice(1).concat(phoneSentences(d).slice(0, 1)); }
+
+function fmtSecurityPhone(d) {
+  const p = d.phone || {}, f = d.ftc || {};
+  const L = ["SECURITY TEAM: PHONE NUMBER REPORT", ""];
+  L.push("IOC:      " + (p.international || d.domain) + "  (phone)");
+  L.push("Verdict:  " + d.verdict + riskTag(d));
+  L.push("Analyzed: " + stampUTC() + cacheSuffix(d));
+  L.push("Number:   " + [p.location || p.region, p.line_type, p.carrier ? "originally " + p.carrier : ""].filter(Boolean).join(" · "));
+  if (f.not_covered) L.push("Reports:  complaint data covers +1 numbers only");
+  else if (!isErr(f)) L.push("Reports:  " + (f.complaints || 0) + " consumer complaint(s), " + f.window_from + " to " + f.window_to +
+    (f.complaints ? "; latest " + f.latest + " (" + f.latest_topic + ")" : ""));
+  if (d.reasons && d.reasons.length) L.push("Signals:  " + d.reasons.join(" | "));
+  L.push("Caveat:   complaints are unverified consumer reports, and caller ID can be spoofed.");
+  L.push("");
+  evidenceLines(d).forEach(x => L.push(x));
+  L.push("");
+  L.push("Recommended action: " + recAction(d));
+  return L.join("\n");
+}
+
 function briefCore(d) {
+  if (d.kind === "phone") return phoneBrief(d);
   if (d.kind === "ip") return ipBrief(d);
   if (d.unresolved && d.nx_summary) return d.nx_summary + " There is nothing to look up, and this is not a sign of malice on its own.";
   if (d.unresolved) {
@@ -472,6 +571,7 @@ function keyOn(k) { return !!(current && current.keys && current.keys[k]); }
 function muted(msg) { return '<pre class="muted">' + esc(msg) + '</pre>'; }
 
 function cards(d) {
+  if (d.kind === "phone") return phoneCards(d);
   if (d.kind === "ip") return ipCards(d);
   if (d.kind === "cidr") return cidrCards(d);
   if (d.kind === "hash") return hashCards(d);
@@ -1359,6 +1459,12 @@ function recAction(d) {
 
 function recActionCore(d) {
   if (d.unresolved) return "No action is needed on the name itself, because it does not exist online. If it was expected to be live, double-check the spelling. If a message claimed to come from it, treat that claim as forged: the domain cannot send or receive mail.";
+  if (d.kind === "phone") return ({
+    "Likely Malicious": "Block the number on company phones and in any call or SMS filtering; warn staff who may have been called or texted; if it appeared as a callback number in an email, purge that email.",
+    "Suspicious": "Don't call it back. Verify the claimed caller through a number you already trust (official website, existing contract), and report it if it came in a phishing email or text.",
+    "Low–Moderate": "One unverified complaint. Verify any request from this number through a contact you already trust before acting.",
+    "No Reports Found": "No complaints found, which doesn't prove it is legitimate. Still verify any caller asking for payment, passwords or codes through a number you already trust."
+  })[d.verdict] || "Review manually.";
   if (d.kind === "hash") return ({
     "Likely Malicious": "Block this hash in EDR (CrowdStrike Falcon); hunt for the file across endpoints; quarantine/purge any email carrying it (Mimecast).",
     "Suspicious": "Detonate in a sandbox and monitor; block pending analysis if it arrived via email.",
@@ -1414,6 +1520,15 @@ function evidenceRaw(d) {
     return { mal: s.malicious || 0, tot: tot };
   };
 
+  if (d.kind === "phone") {
+    const p = d.phone || {}, f = d.ftc || {};
+    add("Number check", "clean", [p.location || p.region, p.line_type && p.line_type.toLowerCase()].filter(Boolean).join(", "));
+    if (f.not_covered) add("Consumer complaints (FTC)", "na", "covers +1 numbers only");
+    else if (f.error) add("Consumer complaints (FTC)", "na", "no data");
+    else if (f.complaints) add("Consumer complaints (FTC)", "hit", f.complaints + " complaint(s), " + f.window_from + " to " + f.window_to);
+    else add("Consumer complaints (FTC)", "clean", "none, " + f.window_from + " to " + f.window_to);
+    return out;
+  }
   if (d.kind === "hash") {
     const v = d.vt_file;
     if (!v) add("VirusTotal", "na", keyOn('vt') ? "no response" : "no API key");
@@ -1586,6 +1701,7 @@ function fmtSecurityHash(d) {
 
 // Security Team — full technical report
 function fmtSecurity(d) {
+  if (d.kind === "phone") return fmtSecurityPhone(d);
   if (d.kind === "hash") return fmtSecurityHash(d);
   if (d.kind === "cidr") return fmtSecurityCIDR(d);
   if (d.kind === "ip") return fmtSecurityIP(d);
@@ -1694,6 +1810,7 @@ function hashPoints(d) {
 }
 
 function stakeholderPoints(d) {
+  if (d.kind === "phone") return phonePoints(d);
   if (d.kind === "ip") return ipPoints(d);
   if (d.kind === "cidr") return cidrPoints(d);
   if (d.kind === "hash") return hashPoints(d);
@@ -1761,17 +1878,23 @@ function stakeholderPoints(d) {
 function riskRating(d) {
   return ({
     "Likely Malicious": "HIGH", "Suspicious": "ELEVATED",
-    "Low–Moderate": "LOW–MODERATE", "Likely Legitimate": "LOW", "Domain Not Found": "N/A", "Not In Use": "N/A",
+    "Low–Moderate": "LOW–MODERATE", "Likely Legitimate": "LOW", "Domain Not Found": "N/A", "Not In Use": "N/A", "No Reports Found": "NONE REPORTED",
     "Inconclusive": "UNKNOWN (incomplete lookup)"
   })[d.verdict] || "UNKNOWN";
 }
 
 // Executive — decision-oriented risk brief
 function fmtExecutive(d) {
+  const phone = d.kind === "phone";
   const ip = d.kind === "ip";
   const cidr = d.kind === "cidr";
   const hash = d.kind === "hash";
-  const bottom = (hash ? {
+  const bottom = (phone ? {
+    "Likely Malicious": "This phone number is widely reported for scam calls. Staff should not call it back or act on calls or texts from it.",
+    "Suspicious": "This phone number has been reported for unwanted or scam calls and should be treated with caution.",
+    "Low–Moderate": "This number has one unverified complaint against it. Normal caution is enough.",
+    "No Reports Found": "No complaints were found about this number. That does not confirm it is legitimate."
+  } : hash ? {
     "Likely Malicious": "This file is identified as malware and should be blocked and removed from any system it reached.",
     "Suspicious": "This file shows suspicious characteristics and should be contained and analyzed before use.",
     "Low–Moderate": "This file carries limited risk but is not clearly trusted; handle with caution.",
@@ -1792,7 +1915,12 @@ function fmtExecutive(d) {
     "Low–Moderate": "This domain carries limited risk. Normal precautions and monitoring are sufficient.",
     "Likely Legitimate": "This domain appears legitimate and poses no significant risk to the organization at this time."
   })[d.verdict] || (d.unresolved ? (d.nx_summary || "This name has no DNS records, so it does not exist online and cannot host a website or send or receive mail.") : d.verdict === "Inconclusive" ? "Not enough evidence to assess this asset — key intelligence sources didn't respond at the time of the check. It should not be treated as safe until re-checked." : "Manual review required.");
-  const decision = (hash ? {
+  const decision = (phone ? {
+    "Likely Malicious": "Block the number on company phones and warn staff who may have been contacted.",
+    "Suspicious": "Advise staff not to call it back and to verify any request through a known contact.",
+    "Low–Moderate": "No immediate action; verify requests through known contacts.",
+    "No Reports Found": "No action required beyond normal verification."
+  } : hash ? {
     "Likely Malicious": "Authorize blocking the hash in EDR and purging any email carrying the file.",
     "Suspicious": "Approve sandbox analysis and containment before the file is used.",
     "Low–Moderate": "No immediate action; monitor and sandbox if warranted.",
@@ -1847,6 +1975,23 @@ function fmtEndUser(d) {
     "Low–Moderate": "This is probably okay, but stay alert.",
     "Likely Legitimate": "✓ This looks SAFE."
   })[d.verdict] || (d.unresolved ? "This name doesn't exist online." : d.verdict === "Inconclusive" ? "We couldn't finish checking this — don't open or click it yet, and check with IT Security." : "Unable to determine — check with IT Security.");
+  if (d.kind === "phone") {
+    const verdictLine = ({
+      "Likely Malicious": "⚠ This number is widely reported for scam calls.",
+      "Suspicious": "⚠ This number has been reported for unwanted or scam calls.",
+      "Low–Moderate": "This number has one report against it. Be careful.",
+      "No Reports Found": "We found no reports about this number, but that doesn't prove it's safe."
+    })[d.verdict] || result;
+    return ["IS THIS SAFE?", "", "We checked: " + d.defanged, "When:       " + stampUTC(), "", "Result: " + verdictLine, "",
+      "What you should do:"].concat(danger ? [
+      "• Don't call it back, and don't reply to texts from it.",
+      "• Never give passwords, payment details or one-time codes to a caller.",
+      "• If an email or text asked you to call this number, report that message to IT Security."
+    ] : [
+      "• If a caller asks for money, passwords or codes, hang up and call back on a number you already know, such as the one on the company's official website.",
+      "• If anything feels off, contact IT Security."
+    ]).join("\n");
+  }
   if (d.unresolved) {
     return ["IS THIS SAFE?", "", "We checked: " + d.defanged, "", "Result: " + result, "",
       "In plain terms: " + (d.nx_summary || "This web or email name isn't set up on the internet, so there's nothing there. It can't host a real website or send or receive email."),
