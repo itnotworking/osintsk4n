@@ -1476,6 +1476,46 @@ def ftc_lookup(num):
 _ftc_refresh_async()
 
 
+# FCC consumer complaints (Socrata open data): unwanted-call, robocall and text complaints since 2014,
+# updated daily and queried per number. Both the caller ID and the "call back at" number are searched.
+# A free Socrata app token (FCC_APP_TOKEN) lifts the anonymous per-IP rate limit but isn't required.
+FCC_COMPLAINTS_URL = "https://opendata.fcc.gov/resource/3xyp-aqkj.json"
+FCC_APP_TOKEN = _key("FCC_APP_TOKEN")
+_FCC_ISSUES = "issue in ('Unwanted Calls','Robocalls','Telemarketing (including do not call and spoofing)')"
+
+
+@_cached
+def fcc_lookup(e164):
+    """FCC complaints naming this number: totals, last 12 months, texts, recorded messages, and how often it
+    was given as the number to call back (when that differs from the caller ID)."""
+    num = phonenumbers.parse(e164)
+    if num.country_code != 1:
+        return {"not_covered": True}
+    nat = str(num.national_number)
+    n = f"{nat[:3]}-{nat[3:6]}-{nat[6:]}"   # the dataset stores 813-378-3150; built from digits only
+    since = (dt.date.today() - dt.timedelta(days=365)).isoformat()
+    sel = (f"count(*) as total, sum(case(date_created > '{since}',1,true,0)) as recent, "
+           f"sum(case(advertiser_business_phone_number = '{n}' AND caller_id_number != '{n}',1,true,0)) as callback, "
+           f"sum(case(type_of_call_or_messge = 'Text Message',1,true,0)) as texts, "
+           f"sum(case(type_of_call_or_messge = 'Prerecorded Voice',1,true,0)) as recorded, "
+           f"min(date_created) as first, max(date_created) as last")
+    headers = {"User-Agent": FTC_UA}
+    if FCC_APP_TOKEN:
+        headers["X-App-Token"] = FCC_APP_TOKEN
+    st, data, err = _api(FCC_COMPLAINTS_URL, headers=headers, timeout=15, params={
+        "$select": sel,
+        "$where": f"(caller_id_number = '{n}' OR advertiser_business_phone_number = '{n}') AND {_FCC_ISSUES}"})
+    if err:
+        return {"error": err}
+    row = data[0] if isinstance(data, list) and data else {}
+    num_of = lambda k: int(float(row.get(k) or 0))
+    out = {"complaints": num_of("total"), "recent": num_of("recent"), "callback": num_of("callback"),
+           "texts": num_of("texts"), "recorded": num_of("recorded"), "recent_since": since}
+    if out["complaints"]:
+        out.update(first=(row.get("first") or "")[:10], last=(row.get("last") or "")[:10])
+    return out
+
+
 @_cached
 def proxycheck_ip(ip):
     """proxycheck.io — proxy/VPN/Tor detection, risk score, and attacks seen by its honeypots."""
@@ -2111,13 +2151,30 @@ def score_phone(result):
     So: one complaint is Low–Moderate, a pattern is Suspicious, and only many complaints that include a
     scam topic reach Likely Malicious. No signals at all is "No Reports Found", never "legitimate"."""
     pts, reasons, flags = 0, [], []
-    f = result.get("ftc") or {}
+    f, c = result.get("ftc") or {}, result.get("fcc") or {}
     n = f.get("complaints") or 0
+    n_fcc = c.get("recent") or 0
+    by_count = lambda k: 45 if k >= 10 else (30 if k >= 2 else (15 if k else 0))
+    # the stronger of the two agencies' recent counts, plus a bonus when both independently received complaints
+    pts += max(by_count(n), by_count(n_fcc)) + (10 if n and n_fcc else 0)
+    if n or n_fcc:
+        total = max(n, n_fcc)
+        flags.append({"cat": "Reported caller", "detail": f"{total}+ complaint{'s' if total != 1 else ''}"})
+    if n_fcc:
+        reasons.append(f"Reported in {n_fcc} FCC consumer complaint{'s' if n_fcc != 1 else ''} about calls or texts "
+                       f"in the last 12 months (unverified reports)")
+    if c.get("callback"):
+        pts += 15
+        reasons.append(f"Given as the number to call back in {c['callback']} FCC complaint{'s' if c['callback'] != 1 else ''}, "
+                       f"so it is a line the caller really answers")
+        flags.append({"cat": "Callback number", "detail": f"in {c['callback']} complaint{'s' if c['callback'] != 1 else ''}"})
+    if c.get("complaints") and not n_fcc and not n:
+        pts += 12
+        reasons.append(f"{c['complaints']} older FCC complaint{'s' if c['complaints'] != 1 else ''}, the latest on {c['last']}. "
+                       f"Numbers are often reassigned, so older reports may not apply to whoever has it now")
     if n:
-        pts += 45 if n >= 10 else (30 if n >= 2 else 15)
-        reasons.append(f"Reported in {n} consumer complaint{'s' if n != 1 else ''} about unwanted calls "
+        reasons.append(f"Reported in {n} FTC consumer complaint{'s' if n != 1 else ''} about unwanted calls "
                        f"between {f['window_from']} and {f['window_to']} (unverified reports)")
-        flags.append({"cat": "Reported caller", "detail": f"{n} complaint{'s' if n != 1 else ''}"})
         k = f.get("scam_complaints") or 0
         # a stray miscategorised report shouldn't turn a telemarketer into a scammer: a quarter or more must be scams
         if k and k * 4 >= n:
@@ -2383,6 +2440,7 @@ SOURCE_LABELS = {
     "proxycheck": "proxycheck.io", "blocklists": "Public blocklists", "shodan": "Exposure scan", "gsb": "Safe Browsing", "urlscan": "urlscan.io",
     "hybrid": "Hybrid Analysis", "triage": "Hatching Triage",
     "hudsonrock": "Hudson Rock", "xon": "XposedOrNot", "ftc": "Consumer complaints (FTC)",
+    "fcc": "Consumer complaints (FCC)",
 }
 
 # The sources a clean verdict actually rests on, per indicator type.
@@ -2392,7 +2450,7 @@ CORE_SOURCES = {
     "domain": ("vt", "gsb", "threatfox", "urlhaus", "otx", "urlscan"),
     "email": ("vt", "gsb", "threatfox", "urlhaus", "otx", "ipqs", "hudsonrock", "xon"),
     "provider_email": ("ipqs", "hudsonrock", "xon"),
-    "phone": ("ftc",),
+    "phone": ("ftc", "fcc"),
 }
 
 
@@ -2471,6 +2529,8 @@ def analyze(raw_input, fresh=False):
                          "against public threat-intelligence sources."}
 
     if parsed["kind"] == "phone":
+        if fresh:
+            _purge_cache([parsed["phone"]])
         result = _analyze_phone(parsed, raw_input)
         result.update(score(result))
         _flag_degraded(result)
@@ -2513,7 +2573,7 @@ def _analyze_phone(parsed, raw_input):
     info = phone_info(num)
     return {"ok": True, "kind": "phone", "input": raw_input, "domain": parsed["phone"],
             "registrable": parsed["phone"], "is_ip": False, "defanged": info["international"],
-            "phone": info, "ftc": ftc_lookup(num)}
+            "phone": info, "ftc": ftc_lookup(num), "fcc": fcc_lookup(parsed["phone"])}
 
 
 def _analyze_hash(parsed, raw_input):
@@ -2775,6 +2835,11 @@ def build_phone_summary(r):
     elif not f.get("error"):
         lines.append(f"Reports:  {f.get('complaints', 0)} FTC consumer complaint(s), {f.get('window_from')} to {f.get('window_to')}"
                      + (f"; latest {f['latest']} ({f['latest_topic']})" if f.get("complaints") else ""))
+    c = r.get("fcc") or {}
+    if not c.get("not_covered") and not c.get("error"):
+        lines.append(f"FCC:      {c.get('recent', 0)} complaint(s) in the last 12 months, {c.get('complaints', 0)} since 2014"
+                     + (f"; latest {c['last']}" if c.get("complaints") else "")
+                     + (f"; callback number in {c['callback']}" if c.get("callback") else ""))
     if r.get("reasons"):
         lines.append("Signals:  " + " | ".join(r["reasons"]))
     return "\n".join(lines)

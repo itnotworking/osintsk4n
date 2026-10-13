@@ -238,6 +238,7 @@ const FLAG_TIPS = {
   "Reported caller": "Consumers filed complaints about unwanted calls from this number. Reports are unverified and caller ID can be faked.",
   "Scam reports": "At least a quarter of the complaints describe scams (impersonation, prizes or tech support) rather than telemarketing.",
   "Premium rate": "Calling this number charges the caller, a common way callback scams make money.",
+  "Callback number": "Complainants named this as the number they were told to call back. Scammers really answer these lines, so it can't be blamed on caller-ID spoofing.",
   "Shared host": "A user-created site on a free/shared hosting platform (Render, Vercel, Netlify, Fly.io…). Anyone can spin one up in minutes and they're heavily abused for phishing — the platform's age and reputation say nothing about this specific site.",
   "Compromised": "This exact address appears in infostealer-malware logs — its saved credentials were stolen, so the account may be hijacked and used to send malicious mail.",
   "Spoofable": "Weak email authentication (SPF/DKIM/DMARC) lets attackers forge mail from this domain — the basis of Business Email Compromise (BEC).",
@@ -468,7 +469,8 @@ function phoneCards(d) {
       "The carrier the number was first issued to. Numbers can move to another carrier, so this may not be the current one.") : "") +
     (p.timezones && p.timezones.length ? kvrow("Time zone", p.timezones.join(", ")) : "")
   )));
-  out.push(card("Complaint Reports", withSource("FTC Do Not Call complaint data", () => complaintBlock(d.ftc || {}))));
+  out.push(card("Recent Complaints", withSource("FTC Do Not Call complaint data", () => complaintBlock(d.ftc || {}))));
+  out.push(card("Complaint History", withSource("FCC consumer complaint data", () => fccBlock(d.fcc || {}))));
   return '<div class="grid">' + out.join("") + '</div>' + buildTicket(d);
 }
 
@@ -488,6 +490,21 @@ function complaintBlock(f) {
     win;
 }
 
+function fccBlock(c) {
+  if (c.not_covered) return muted("Complaint data covers +1 numbers only (US, Canada and the Caribbean), so there are no reports to check for this number.");
+  if (isErr(c)) return failNote(c);
+  const caveat = "Consumer complaints to the FCC about unwanted calls, robocalls and texts, kept since 2014 and updated daily. They are not verified, and caller ID can be faked.";
+  if (!c.complaints) return kvrow("Complaints", "none since 2014", "", caveat);
+  return kvrow("Last 12 months", String(c.recent), c.recent >= 10 ? "bad" : (c.recent ? "warn" : ""), caveat) +
+    kvrow("All time", c.complaints + " since " + c.first, "",
+      "Every complaint naming this number. Older ones may be about a previous owner, because numbers are often reassigned.") +
+    kvrow("Latest", c.last) +
+    (c.callback ? kvrow("Call-back number", c.callback + " of " + c.complaints, "bad",
+      "Complaints where this was the number the caller said to call back, different from the caller ID shown. Scammers really answer these lines, so they can't be blamed on spoofing.") : "") +
+    (c.texts ? kvrow("Text messages", c.texts + " of " + c.complaints, "", "Complaints about texts (smishing) rather than calls.") : "") +
+    kvrow("Recorded messages", c.recorded + " of " + c.complaints, "", "Complaints describing a prerecorded voice (robocall).");
+}
+
 // one sentence each: what the number is, what complaints say, what to do
 function phoneSentences(d) {
   const p = d.phone || {}, f = d.ftc || {}, n = f.complaints || 0, k = f.scam_complaints || 0;
@@ -495,13 +512,25 @@ function phoneSentences(d) {
   const what = "This phone number (" + (p.international || d.domain) + ") is " +
     (line ? "a " + line + (/number$/.test(line) ? "" : " number") : "a valid number") +
     (p.location ? " registered in " + p.location.replace(/\.$/, "") : "") + ".";   // "Washington D.C." already ends in a period
-  let reports;
-  if (f.not_covered) reports = "Complaint data only covers +1 numbers (US and Canada), so there are no reports to check. Judge it by the call or message it came with.";
-  else if (isErr(f)) reports = "Complaint data couldn't be checked for this lookup, so this is not a clean result.";
-  else if (!n) reports = "No consumer complaints about calls from it were filed between " + f.window_from + " and " + f.window_to + ". That doesn't make it safe: scam numbers change often and many are never reported.";
-  else reports = "It was named in " + n + " consumer complaint" + (n === 1 ? "" : "s") + " about unwanted calls between " + f.window_from + " and " + f.window_to +
-    (k * 4 >= n && k ? ", " + k + " of them about scams such as impersonation" : "") +
-    ((f.robocalls || 0) * 2 >= n ? ", mostly robocalls" : "") + ". Complaints are unverified, and caller ID can be faked.";
+  const c = d.fcc || {}, ftcOk = !isErr(f), fccOk = !isErr(c), plural = (x, w) => x + " " + w + (x === 1 ? "" : "s");
+  const r = [];
+  if (f.not_covered) r.push("Complaint data only covers +1 numbers (US and Canada), so there are no reports to check. Judge it by the call or message it came with.");
+  else {
+    if (!ftcOk && !fccOk) r.push("Complaint data couldn't be checked for this lookup, so this is not a clean result.");
+    if (ftcOk && n) r.push("It was named in " + plural(n, "FTC complaint") + " about unwanted calls between " + f.window_from + " and " + f.window_to +
+      (k * 4 >= n && k ? ", " + k + " of them about scams such as impersonation" : "") +
+      ((f.robocalls || 0) * 2 >= n ? ", mostly robocalls" : "") + ".");
+    if (fccOk && c.recent) r.push("The FCC received " + plural(c.recent, "complaint") + " about it in the last 12 months" +
+      (c.callback ? ", " + c.callback + " giving it as the number to call back" : "") +
+      (c.texts ? ", " + c.texts + " about text messages" : "") + ".");
+    else if (fccOk && c.complaints) r.push("The FCC has " + plural(c.complaints, "older complaint") + " about it, the latest on " + c.last +
+      ". Numbers are often reassigned, so they may not apply to whoever has it now.");
+    if (n || c.recent) r.push("Complaints are unverified and caller ID can be faked" +
+      (c.callback ? ", but a call-back number is a real line the caller answers." : "."));
+    if (ftcOk && fccOk && !n && !c.complaints) r.push("No consumer complaints were found: none to the FTC between " + f.window_from + " and " + f.window_to +
+      " and none to the FCC since 2014. That doesn't make it safe, because scam numbers change often and many are never reported.");
+  }
+  const reports = r.join(" ");
   const extra = p.line_type === "Premium rate" ? "Calling it costs the caller money, a common callback-scam trick."
     : p.line_type === "Toll-free" ? "Toll-free numbers are used by real businesses and by fake invoice and tech-support scams alike." : "";
   return [what, reports, extra].filter(Boolean);
@@ -509,7 +538,7 @@ function phoneSentences(d) {
 
 function phoneBrief(d) {
   const posture = ({
-    "Likely Malicious": "Treat it as a scam line: don't call it back, and block it.",
+    "Likely Malicious": "Treat it as hostile: don't call it back, and block it.",
     "Suspicious": "Don't call it back. Verify the claimed caller through a number you already trust.",
     "Low–Moderate": "Be cautious, and verify the caller through a number you already trust.",
     "No Reports Found": "Still verify any caller asking for payment, passwords or codes through a number you already trust.",
@@ -530,6 +559,9 @@ function fmtSecurityPhone(d) {
   if (f.not_covered) L.push("Reports:  complaint data covers +1 numbers only");
   else if (!isErr(f)) L.push("Reports:  " + (f.complaints || 0) + " consumer complaint(s), " + f.window_from + " to " + f.window_to +
     (f.complaints ? "; latest " + f.latest + " (" + f.latest_topic + ")" : ""));
+  const c = d.fcc || {};
+  if (!c.not_covered && !isErr(c)) L.push("FCC:      " + (c.recent || 0) + " complaint(s) in the last 12 months, " + (c.complaints || 0) + " since 2014" +
+    (c.complaints ? "; latest " + c.last : "") + (c.callback ? "; callback number in " + c.callback : ""));
   if (d.reasons && d.reasons.length) L.push("Signals:  " + d.reasons.join(" | "));
   L.push("Caveat:   complaints are unverified consumer reports, and caller ID can be spoofed.");
   L.push("");
@@ -1527,6 +1559,12 @@ function evidenceRaw(d) {
     else if (f.error) add("Consumer complaints (FTC)", "na", "no data");
     else if (f.complaints) add("Consumer complaints (FTC)", "hit", f.complaints + " complaint(s), " + f.window_from + " to " + f.window_to);
     else add("Consumer complaints (FTC)", "clean", "none, " + f.window_from + " to " + f.window_to);
+    const c = d.fcc || {};
+    if (c.not_covered) add("Consumer complaints (FCC)", "na", "covers +1 numbers only");
+    else if (c.error) add("Consumer complaints (FCC)", "na", "no data");
+    else if (c.recent) add("Consumer complaints (FCC)", "hit", c.recent + " in the last 12 months" + (c.callback ? ", callback number in " + c.callback : ""));
+    else if (c.complaints) add("Consumer complaints (FCC)", "clean", "none in 12 months; " + c.complaints + " older, latest " + c.last);
+    else add("Consumer complaints (FCC)", "clean", "none since 2014");
     return out;
   }
   if (d.kind === "hash") {
