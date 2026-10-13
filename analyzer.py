@@ -17,6 +17,7 @@ import functools
 import threading
 import ipaddress
 import datetime as dt
+import base64
 import csv
 import io
 import bisect
@@ -1479,6 +1480,37 @@ _ftc_refresh_async()
 # FCC consumer complaints (Socrata open data): unwanted-call, robocall and text complaints since 2014,
 # updated daily and queried per number. Both the caller ID and the "call back at" number are searched.
 # A free Socrata app token (FCC_APP_TOKEN) lifts the anonymous per-IP rate limit but isn't required.
+# Twilio Lookup v2, Line Type Intelligence (~$0.008 per lookup): the line type as the number works today, including
+# after it moved carriers, split into fixed VoIP (business phone systems) and non-fixed VoIP (internet numbers
+# anyone can create in minutes, like Google Voice or TextNow), plus the current carrier. Authenticates with a
+# Standard API key (SK… + secret), never the account Auth Token.
+TWILIO_API_KEY_SID = _key("TWILIO_API_KEY_SID")
+TWILIO_API_KEY_SECRET = _key("TWILIO_API_KEY_SECRET")
+_TWILIO_TYPES = {
+    "landline": "Landline", "mobile": "Mobile", "fixedVoip": "Fixed VoIP", "nonFixedVoip": "Non-fixed VoIP",
+    "personal": "Personal number", "tollFree": "Toll-free", "premium": "Premium rate", "sharedCost": "Shared cost",
+    "uan": "Company number", "voicemail": "Voicemail", "pager": "Pager",
+}
+
+
+@_cached
+def twilio_line_type(e164):
+    if not (TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET):
+        return None
+    auth = base64.b64encode(f"{TWILIO_API_KEY_SID}:{TWILIO_API_KEY_SECRET}".encode()).decode()
+    st, data, err = _api(f"https://lookups.twilio.com/v2/PhoneNumbers/{quote(e164)}",
+                         headers={"Authorization": "Basic " + auth},
+                         params={"Fields": "line_type_intelligence"}, timeout=10)
+    if err:
+        return {"error": err}
+    lti = (data or {}).get("line_type_intelligence") or {}
+    if lti.get("error_code"):
+        return {"error": f"lookup error {lti['error_code']}"}
+    raw = lti.get("type")
+    return {"type": _TWILIO_TYPES.get(raw) if raw and raw != "unknown" else None, "raw_type": raw,
+            "carrier": lti.get("carrier_name") or None}
+
+
 FCC_COMPLAINTS_URL = "https://opendata.fcc.gov/resource/3xyp-aqkj.json"
 FCC_APP_TOKEN = _key("FCC_APP_TOKEN")
 _FCC_ISSUES = "issue in ('Unwanted Calls','Robocalls','Telemarketing (including do not call and spoofing)')"
@@ -2183,7 +2215,15 @@ def score_phone(result):
             flags.append({"cat": "Scam reports", "detail": f"{k} of {n} complaints"})
         if f.get("robocalls", 0) * 2 >= n:
             reasons.append(f"{f['robocalls']} of {n} complaints describe robocalls (recorded messages)")
-    if (result.get("phone") or {}).get("line_type") == "Premium rate":
+    line = result.get("line") if isinstance(result.get("line"), dict) and not result["line"].get("error") else {}
+    if line.get("raw_type") == "nonFixedVoip":
+        # an internet number anyone can create in minutes: the usual scam callback line, but many real people use
+        # Google Voice too, so on its own it only reaches Low–Moderate
+        pts += 12
+        reasons.append("Non-fixed VoIP: an internet number anyone can create online in minutes, the kind most scam "
+                       "callback lines use")
+        flags.append({"cat": "Internet number", "detail": "non-fixed VoIP"})
+    if "Premium rate" in ((result.get("phone") or {}).get("line_type"), line.get("type")):
         pts += 25
         reasons.append("Premium-rate number: calling it costs the caller money, a common callback-scam trick")
         flags.append({"cat": "Premium rate", "detail": "costs the caller to dial"})
@@ -2440,7 +2480,7 @@ SOURCE_LABELS = {
     "proxycheck": "proxycheck.io", "blocklists": "Public blocklists", "shodan": "Exposure scan", "gsb": "Safe Browsing", "urlscan": "urlscan.io",
     "hybrid": "Hybrid Analysis", "triage": "Hatching Triage",
     "hudsonrock": "Hudson Rock", "xon": "XposedOrNot", "ftc": "Consumer complaints (FTC)",
-    "fcc": "Consumer complaints (FCC)",
+    "fcc": "Consumer complaints (FCC)", "line": "Line type lookup (Twilio)",
 }
 
 # The sources a clean verdict actually rests on, per indicator type.
@@ -2535,7 +2575,9 @@ def analyze(raw_input, fresh=False):
         result.update(score(result))
         _flag_degraded(result)
         result["ticket_summary"] = build_summary(result)
-        result["keys"], result["cache_age_s"] = {"fcc_token": bool(FCC_APP_TOKEN)}, 0
+        result["keys"] = {"fcc_token": bool(FCC_APP_TOKEN), "twilio": bool(TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET)}
+        ages = [v.get("_age") for v in result.values() if isinstance(v, dict) and v.get("_age") is not None]
+        result["cache_age_s"] = max(ages) if ages else 0
         return result
 
     ip = domain if is_ip else resolve_ip(domain)
@@ -2573,7 +2615,8 @@ def _analyze_phone(parsed, raw_input):
     info = phone_info(num)
     return {"ok": True, "kind": "phone", "input": raw_input, "domain": parsed["phone"],
             "registrable": parsed["phone"], "is_ip": False, "defanged": info["international"],
-            "phone": info, "ftc": ftc_lookup(num), "fcc": fcc_lookup(parsed["phone"])}
+            "phone": info, "ftc": ftc_lookup(num), "fcc": fcc_lookup(parsed["phone"]),
+            "line": twilio_line_type(parsed["phone"])}
 
 
 def _analyze_hash(parsed, raw_input):
@@ -2828,8 +2871,9 @@ def build_phone_summary(r):
     p, f = r.get("phone") or {}, r.get("ftc") or {}
     lines = [f"IOC:      {p.get('international') or r.get('domain')}  (phone)",
              f"Verdict:  {r['verdict']}" + (f"  (risk {r['score']}/100)" if r.get("score") else "")]
-    lines.append(f"Number:   {p.get('location') or p.get('region') or '?'} · {p.get('line_type') or 'unknown line type'}"
-                 + (f" · originally {p['carrier']}" if p.get("carrier") else ""))
+    ln = r.get("line") if isinstance(r.get("line"), dict) and not r["line"].get("error") else {}
+    lines.append(f"Number:   {p.get('location') or p.get('region') or '?'} · {ln.get('type') or p.get('line_type') or 'unknown line type'}"
+                 + (f" · carrier {ln['carrier']}" if ln.get("carrier") else (f" · originally {p['carrier']}" if p.get("carrier") else "")))
     if f.get("not_covered"):
         lines.append("Reports:  complaint data covers +1 (US and Canada) numbers only")
     elif not f.get("error"):

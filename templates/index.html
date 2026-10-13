@@ -238,6 +238,7 @@ const FLAG_TIPS = {
   "Reported caller": "Consumers filed complaints about unwanted calls from this number. Reports are unverified and caller ID can be faked.",
   "Scam reports": "At least a quarter of the complaints describe scams (impersonation, prizes or tech support) rather than telemarketing.",
   "Premium rate": "Calling this number charges the caller, a common way callback scams make money.",
+  "Internet number": "A non-fixed VoIP number (like Google Voice or TextNow) that anyone can create online in minutes. Most scam callback lines are these, though many real people use them too.",
   "Callback number": "Complainants named this as the number they were told to call back. Scammers really answer these lines, so it can't be blamed on caller-ID spoofing.",
   "Shared host": "A user-created site on a free/shared hosting platform (Render, Vercel, Netlify, Fly.io…). Anyone can spin one up in minutes and they're heavily abused for phishing — the platform's age and reputation say nothing about this specific site.",
   "Compromised": "This exact address appears in infostealer-malware logs — its saved credentials were stolen, so the account may be hijacked and used to send malicious mail.",
@@ -453,19 +454,29 @@ const LINE_TYPE_TIPS = {
   "Toll-free": "Real businesses use toll-free numbers, and so do fake invoice, refund and tech-support scams, because they look official.",
   "Premium rate": "Calling it charges the caller, often heavily. Scam texts and emails use these to bill victims who call back.",
   "VoIP": "An internet phone number. Easy to get online and common in scams, though many businesses use them too.",
+  "Non-fixed VoIP": "An internet number not tied to an address (Google Voice, TextNow and similar). Anyone can create one online in minutes, which is why most scam callback lines are these. Many real people use them too.",
+  "Fixed VoIP": "An internet phone line tied to a registered address, typically a business phone system (RingCentral, Zoom Phone, cable-company phones).",
   "Mobile": "A mobile number.",
   "Landline": "A fixed landline number.",
 };
 const COMPLAINT_CAVEAT = "Consumer complaints about unwanted calls from this number. They are not verified, and scammers can fake a real number's caller ID, so complaints can name an innocent business. Callback numbers printed in an email or text are more reliable, because victims really dial them.";
 
+// the live carrier lookup when it answered, else what the number itself says
+function lineInfo(d) { return (d.line && !isErr(d.line) && d.line.type) ? d.line : null; }
+function lineType(d) { const l = lineInfo(d); return l ? l.type : (d.phone || {}).line_type; }
+
 function phoneCards(d) {
-  const p = d.phone || {}, out = [];
+  const p = d.phone || {}, out = [], live = lineInfo(d), lt = lineType(d);
+  const ltClass = lt === "Premium rate" ? "bad" : (lt === "Non-fixed VoIP" ? "warn" : "");
   out.push(card("Number", withSource("Google libphonenumber", () =>
     kvrow("Number", p.international || d.domain, "", "", null) +
     kvrow("Country", [p.location, p.region].filter(Boolean).join(" · ") || "?", "",
       "Where the number is registered, from its country and area code. It says where the number belongs, not where the caller is.") +
-    kvrow("Line type", p.line_type || "unknown", p.line_type === "Premium rate" ? "bad" : "", LINE_TYPE_TIPS[p.line_type] || "") +
-    (p.carrier ? kvrow("Original carrier", p.carrier, "",
+    kvrow("Line type", lt || "unknown", ltClass, LINE_TYPE_TIPS[lt] || "", live ? "Twilio Lookup (live carrier data)" : undefined) +
+    (isErr(d.line) ? failRow("Carrier lookup", d.line, "Twilio Lookup") : "") +
+    (live && live.carrier ? kvrow("Current carrier", live.carrier, "",
+      "The carrier the number is with today, including after it moved from another one.", "Twilio Lookup (live carrier data)") : "") +
+    (p.carrier && !(live && live.carrier) ? kvrow("Original carrier", p.carrier, "",
       "The carrier the number was first issued to. Numbers can move to another carrier, so this may not be the current one.") : "") +
     (p.timezones && p.timezones.length ? kvrow("Time zone", p.timezones.join(", ")) : "")
   )));
@@ -508,7 +519,7 @@ function fccBlock(c) {
 // one sentence each: what the number is, what complaints say, what to do
 function phoneSentences(d) {
   const p = d.phone || {}, f = d.ftc || {}, n = f.complaints || 0, k = f.scam_complaints || 0;
-  const line = p.line_type ? (p.line_type === "VoIP" ? "VoIP" : p.line_type.toLowerCase()) : "";
+  const lt = lineType(d), line = lt ? (/VoIP/.test(lt) ? lt.replace("Non-fixed", "non-fixed").replace("Fixed", "fixed") : lt.toLowerCase()) : "";
   const what = "This phone number (" + (p.international || d.domain) + ") is " +
     (line ? "a " + line + (/number$/.test(line) ? "" : " number") : "a valid number") +
     (p.location ? " registered in " + p.location.replace(/\.$/, "") : "") + ".";   // "Washington D.C." already ends in a period
@@ -531,8 +542,9 @@ function phoneSentences(d) {
       " and none to the FCC since 2014. That doesn't make it safe, because scam numbers change often and many are never reported.");
   }
   const reports = r.join(" ");
-  const extra = p.line_type === "Premium rate" ? "Calling it costs the caller money, a common callback-scam trick."
-    : p.line_type === "Toll-free" ? "Toll-free numbers are used by real businesses and by fake invoice and tech-support scams alike." : "";
+  const extra = lt === "Premium rate" ? "Calling it costs the caller money, a common callback-scam trick."
+    : lt === "Toll-free" ? "Toll-free numbers are used by real businesses and by fake invoice and tech-support scams alike."
+    : lt === "Non-fixed VoIP" ? "It is an internet number (like Google Voice) that anyone can create in minutes, the kind most scam callback lines use, though many real people use them too." : "";
   return [what, reports, extra].filter(Boolean);
 }
 
@@ -555,7 +567,9 @@ function fmtSecurityPhone(d) {
   L.push("IOC:      " + (p.international || d.domain) + "  (phone)");
   L.push("Verdict:  " + d.verdict + riskTag(d));
   L.push("Analyzed: " + stampUTC() + cacheSuffix(d));
-  L.push("Number:   " + [p.location || p.region, p.line_type, p.carrier ? "originally " + p.carrier : ""].filter(Boolean).join(" · "));
+  const live = lineInfo(d);
+  L.push("Number:   " + [p.location || p.region, lineType(d),
+    live && live.carrier ? "carrier " + live.carrier : (p.carrier ? "originally " + p.carrier : "")].filter(Boolean).join(" · "));
   if (f.not_covered) L.push("Reports:  complaint data covers +1 numbers only");
   else if (!isErr(f)) L.push("Reports:  " + (f.complaints || 0) + " consumer complaint(s), " + f.window_from + " to " + f.window_to +
     (f.complaints ? "; latest " + f.latest + " (" + f.latest_topic + ")" : ""));
@@ -1555,6 +1569,9 @@ function evidenceRaw(d) {
   if (d.kind === "phone") {
     const p = d.phone || {}, f = d.ftc || {};
     add("Number check", "clean", [p.location || p.region, p.line_type && p.line_type.toLowerCase()].filter(Boolean).join(", "));
+    if (d.line && isErr(d.line)) add("Line type lookup (Twilio)", "na", "no data");
+    else if (lineInfo(d)) add("Line type lookup (Twilio)", d.line.raw_type === "nonFixedVoip" ? "hit" : "clean",
+      d.line.type + (d.line.carrier ? ", " + d.line.carrier : ""));
     if (f.not_covered) add("Consumer complaints (FTC)", "na", "covers +1 numbers only");
     else if (f.error) add("Consumer complaints (FTC)", "na", "no data");
     else if (f.complaints) add("Consumer complaints (FTC)", "hit", f.complaints + " complaint(s), " + f.window_from + " to " + f.window_to);
