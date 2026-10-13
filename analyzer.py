@@ -2535,7 +2535,7 @@ def analyze(raw_input, fresh=False):
         result.update(score(result))
         _flag_degraded(result)
         result["ticket_summary"] = build_summary(result)
-        result["keys"], result["cache_age_s"] = {}, 0
+        result["keys"], result["cache_age_s"] = {"fcc_token": bool(FCC_APP_TOKEN)}, 0
         return result
 
     ip = domain if is_ip else resolve_ip(domain)
