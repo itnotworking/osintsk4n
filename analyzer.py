@@ -1528,6 +1528,7 @@ def fcc_lookup(e164):
     since = (dt.date.today() - dt.timedelta(days=365)).isoformat()
     sel = (f"count(*) as total, sum(case(date_created > '{since}',1,true,0)) as recent, "
            f"sum(case(advertiser_business_phone_number = '{n}' AND caller_id_number != '{n}',1,true,0)) as callback, "
+           f"sum(case(advertiser_business_phone_number = '{n}' AND caller_id_number != '{n}' AND date_created > '{since}',1,true,0)) as callback_recent, "
            f"sum(case(type_of_call_or_messge = 'Text Message',1,true,0)) as texts, "
            f"sum(case(type_of_call_or_messge = 'Prerecorded Voice',1,true,0)) as recorded, "
            f"min(date_created) as first, max(date_created) as last")
@@ -1542,6 +1543,7 @@ def fcc_lookup(e164):
     row = data[0] if isinstance(data, list) and data else {}
     num_of = lambda k: int(float(row.get(k) or 0))
     out = {"complaints": num_of("total"), "recent": num_of("recent"), "callback": num_of("callback"),
+           "callback_recent": num_of("callback_recent"),
            "texts": num_of("texts"), "recorded": num_of("recorded"), "recent_since": since}
     if out["complaints"]:
         out.update(first=(row.get("first") or "")[:10], last=(row.get("last") or "")[:10])
@@ -2195,11 +2197,12 @@ def score_phone(result):
     if n_fcc:
         reasons.append(f"Reported in {n_fcc} FCC consumer complaint{'s' if n_fcc != 1 else ''} about calls or texts "
                        f"in the last 12 months (unverified reports)")
-    if c.get("callback"):
+    cb = c.get("callback_recent") or 0
+    if cb:
         pts += 15
-        reasons.append(f"Given as the number to call back in {c['callback']} FCC complaint{'s' if c['callback'] != 1 else ''}, "
+        reasons.append(f"Given as the number to call back in {cb} FCC complaint{'s' if cb != 1 else ''} in the last 12 months, "
                        f"so it is a line the caller really answers")
-        flags.append({"cat": "Callback number", "detail": f"in {c['callback']} complaint{'s' if c['callback'] != 1 else ''}"})
+        flags.append({"cat": "Callback number", "detail": f"in {cb} complaint{'s' if cb != 1 else ''}"})
     if c.get("complaints") and not n_fcc and not n:
         pts += 12
         reasons.append(f"{c['complaints']} older FCC complaint{'s' if c['complaints'] != 1 else ''}, the latest on {c['last']}. "
@@ -2209,7 +2212,7 @@ def score_phone(result):
                        f"between {f['window_from']} and {f['window_to']} (unverified reports)")
         k = f.get("scam_complaints") or 0
         # a stray miscategorised report shouldn't turn a telemarketer into a scammer: a quarter or more must be scams
-        if k and k * 4 >= n:
+        if k >= 2 and k * 4 >= n:
             pts += 20
             reasons.append(f"{k} of {n} complaints describe scams (impersonation, prizes or tech support)")
             flags.append({"cat": "Scam reports", "detail": f"{k} of {n} complaints"})
@@ -2883,7 +2886,7 @@ def build_phone_summary(r):
     if not c.get("not_covered") and not c.get("error"):
         lines.append(f"FCC:      {c.get('recent', 0)} complaint(s) in the last 12 months, {c.get('complaints', 0)} since 2014"
                      + (f"; latest {c['last']}" if c.get("complaints") else "")
-                     + (f"; callback number in {c['callback']}" if c.get("callback") else ""))
+                     + (f"; callback number in {c['callback_recent']} of them" if c.get("callback_recent") else ""))
     if r.get("reasons"):
         lines.append("Signals:  " + " | ".join(r["reasons"]))
     return "\n".join(lines)
