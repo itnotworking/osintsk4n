@@ -211,7 +211,7 @@ function lockTicketHeight() {
 }
 
 function verdictClass(v) {
-  return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious","Domain Not Found":"neutral","Not In Use":"neutral","No Reports Found":"neutral","Inconclusive":"neutral"})[v] || "low";
+  return ({"Likely Legitimate":"low","Low–Moderate":"lowmod","Suspicious":"suspicious","Likely Malicious":"malicious","Domain Not Found":"neutral","Not In Use":"neutral","No Complaints Found":"neutral","Inconclusive":"neutral"})[v] || "low";
 }
 
 // A source that errored is a failed lookup, never a clean result — render it that way everywhere.
@@ -224,7 +224,7 @@ function srcErrNames(d) { return (d.source_errors || []).map(e => e.source); }
 // ticket audit trail: say when some sources were reused from the cache rather than fetched now
 function cacheSuffix(d) { return d.cache_age_s > 0 ? "  (some sources cached, up to " + Math.max(1, Math.round(d.cache_age_s / 60)) + " min old)" : ""; }
 // a risk score is meaningless when the lookup failed or the name doesn't exist
-function riskTag(d) { return (d.unresolved || d.verdict === "Inconclusive" || d.verdict === "No Reports Found") ? "" : "  (risk " + d.score + "/100)"; }
+function riskTag(d) { return (d.unresolved || d.verdict === "Inconclusive" || d.verdict === "No Complaints Found") ? "" : "  (risk " + d.score + "/100)"; }
 function ringColor(score) {
   if (score >= 80) return "#ff2d2d";   // severe red
   if (score >= 60) return "#f85149";   // red
@@ -303,7 +303,7 @@ function verdictBanner(d) {
   const cls = verdictClass(d.verdict);
   const unresolved = !!d.unresolved;               // no DNS → no risk score
   const inconclusive = d.verdict === "Inconclusive";
-  const noReports = d.verdict === "No Reports Found";   // a phone number nobody has complained about
+  const noReports = d.verdict === "No Complaints Found";   // a phone number nobody has complained about
   const noScore = unresolved || inconclusive || noReports;
   const ring = noScore ? "#8b8b96" : ringColor(d.score);
   const ringNum = noScore ? "—" : d.score;
@@ -554,7 +554,7 @@ function phoneBrief(d) {
     "Likely Malicious": "Treat it as hostile: don't call it back, and block it.",
     "Suspicious": "Don't call it back. Verify the claimed caller through a number you already trust.",
     "Low–Moderate": "Be cautious, and verify the caller through a number you already trust.",
-    "No Reports Found": "Still verify any caller asking for payment, passwords or codes through a number you already trust.",
+    "No Complaints Found": "Still verify any caller asking for payment, passwords or codes through a number you already trust.",
     "Inconclusive": "The check was incomplete, so don't treat it as safe."
   })[d.verdict] || "";
   return phoneSentences(d).concat(posture ? [posture] : []).join(" ");
@@ -1510,7 +1510,7 @@ function recActionCore(d) {
     "Likely Malicious": "Block the number on company phones and in any call or SMS filtering; warn staff who may have been called or texted; if it appeared as a callback number in an email, purge that email.",
     "Suspicious": "Don't call it back. Verify the claimed caller through a number you already trust (official website, existing contract), and report it if it came in a phishing email or text.",
     "Low–Moderate": "One unverified complaint. Verify any request from this number through a contact you already trust before acting.",
-    "No Reports Found": "No complaints found, which doesn't prove it is legitimate. Still verify any caller asking for payment, passwords or codes through a number you already trust."
+    "No Complaints Found": "No complaints found, which doesn't prove it is legitimate. Still verify any caller asking for payment, passwords or codes through a number you already trust."
   })[d.verdict] || "Review manually.";
   if (d.kind === "hash") return ({
     "Likely Malicious": "Block this hash in EDR (CrowdStrike Falcon); hunt for the file across endpoints; quarantine/purge any email carrying it (Mimecast).",
@@ -1934,7 +1934,7 @@ function stakeholderPoints(d) {
 function riskRating(d) {
   return ({
     "Likely Malicious": "HIGH", "Suspicious": "ELEVATED",
-    "Low–Moderate": "LOW–MODERATE", "Likely Legitimate": "LOW", "Domain Not Found": "N/A", "Not In Use": "N/A", "No Reports Found": "NONE REPORTED",
+    "Low–Moderate": "LOW–MODERATE", "Likely Legitimate": "LOW", "Domain Not Found": "N/A", "Not In Use": "N/A", "No Complaints Found": "NONE REPORTED",
     "Inconclusive": "UNKNOWN (incomplete lookup)"
   })[d.verdict] || "UNKNOWN";
 }
@@ -1949,7 +1949,7 @@ function fmtExecutive(d) {
     "Likely Malicious": "This phone number is widely reported for scam calls. Staff should not call it back or act on calls or texts from it.",
     "Suspicious": "This phone number has been reported for unwanted or scam calls and should be treated with caution.",
     "Low–Moderate": "This number has one unverified complaint against it. Normal caution is enough.",
-    "No Reports Found": "No complaints were found about this number. That does not confirm it is legitimate."
+    "No Complaints Found": "No complaints were found about this number. That does not confirm it is legitimate."
   } : hash ? {
     "Likely Malicious": "This file is identified as malware and should be blocked and removed from any system it reached.",
     "Suspicious": "This file shows suspicious characteristics and should be contained and analyzed before use.",
@@ -1975,7 +1975,7 @@ function fmtExecutive(d) {
     "Likely Malicious": "Block the number on company phones and warn staff who may have been contacted.",
     "Suspicious": "Advise staff not to call it back and to verify any request through a known contact.",
     "Low–Moderate": "No immediate action; verify requests through known contacts.",
-    "No Reports Found": "No action required beyond normal verification."
+    "No Complaints Found": "No action required beyond normal verification."
   } : hash ? {
     "Likely Malicious": "Authorize blocking the hash in EDR and purging any email carrying the file.",
     "Suspicious": "Approve sandbox analysis and containment before the file is used.",
@@ -2036,7 +2036,7 @@ function fmtEndUser(d) {
       "Likely Malicious": "⚠ This number is widely reported for scam calls.",
       "Suspicious": "⚠ This number has been reported for unwanted or scam calls.",
       "Low–Moderate": "This number has one report against it. Be careful.",
-      "No Reports Found": "We found no reports about this number, but that doesn't prove it's safe."
+      "No Complaints Found": "We found no reports about this number, but that doesn't prove it's safe."
     })[d.verdict] || result;
     return ["IS THIS SAFE?", "", "We checked: " + d.defanged, "When:       " + stampUTC(), "", "Result: " + verdictLine, "",
       "What you should do:"].concat(danger ? [

@@ -2183,7 +2183,7 @@ def score_hash(result):
 def score_phone(result):
     """Complaints are consumer reports, not proof, and most are unwanted telemarketing rather than scams.
     So: one complaint is Low–Moderate, a pattern is Suspicious, and only many complaints that include a
-    scam topic reach Likely Malicious. No signals at all is "No Reports Found", never "legitimate"."""
+    scam topic reach Likely Malicious. No signals at all is "No Complaints Found", never "legitimate"."""
     pts, reasons, flags = 0, [], []
     f, c = result.get("ftc") or {}, result.get("fcc") or {}
     n = f.get("complaints") or 0
@@ -2231,7 +2231,7 @@ def score_phone(result):
         reasons.append("Premium-rate number: calling it costs the caller money, a common callback-scam trick")
         flags.append({"cat": "Premium rate", "detail": "costs the caller to dial"})
     if not pts:
-        return {"score": 0, "verdict": "No Reports Found", "flags": [], "reasons": reasons}
+        return {"score": 0, "verdict": "No Complaints Found", "flags": [], "reasons": reasons}
     pts, verdict = _verdict_from(pts)
     return {"score": pts, "verdict": verdict, "flags": flags, "reasons": reasons}
 
@@ -2550,7 +2550,7 @@ def _flag_degraded(result):
                            "error": (result.get(k) or {}).get("error") if isinstance(result.get(k), dict) else "no answer"}
                           for k in core]
     # positive findings from the sources that did answer still stand; only a would-be "clean" call is withheld
-    if core and len(answered) * 2 < len(core) and result.get("verdict") in ("Likely Legitimate", "Low–Moderate", "No Reports Found"):
+    if core and len(answered) * 2 < len(core) and result.get("verdict") in ("Likely Legitimate", "Low–Moderate", "No Complaints Found"):
         result["verdict"] = "Inconclusive"
         result["reasons"] = [f"Only {len(answered)} of {len(core)} core intel sources returned usable data — "
                              f"not enough evidence to call this clean"] + (result.get("reasons") or [])
