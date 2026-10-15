@@ -386,7 +386,10 @@ function ipBrief(d) {
   const anon = i.proxy || ab.isTor || iq.proxy || iq.vpn || iq.tor || pc.proxy || /proxy|vpn|tor/.test(usage);
 
   // what it is
-  let s1 = "This is " + (hosting ? "a data-center / hosting IP" : "an IP") + (owner ? " operated by " + owner : "");
+  const sharedBy = sharedProvider(ab);
+  let s1 = sharedBy
+    ? "This is a shared address on " + sharedBy + "'s network, used by many unrelated websites"
+    : "This is " + (hosting ? "a data-center / hosting IP" : "an IP") + (owner ? " operated by " + owner : "");
   if (ab.isTor || iq.active_tor || bl.tor_exit || /tor/i.test(pc.type || "")) s1 += ", running as a Tor exit node";
   else if (iq.active_vpn || /vpn/i.test(pc.type || "")) s1 += ", operating as a VPN endpoint";
   else if (anon) s1 += ", flagged as proxy / VPN / Tor infrastructure";
@@ -1051,12 +1054,35 @@ function vtBlock(v) {
          (rep!=null ? kvrow("Reputation", rep, rep<0?"bad":"", VT_TIP.rep) : "") +
          (v.categories ? kvrow("Categories", Object.values(v.categories).slice(0,4).join(", "), "", VT_TIP.cat) : "");
 }
+// Content delivery networks and hosting platforms serve thousands of unrelated sites from the same
+// addresses, so abuse reports on one of their IPs are mostly about other sites. Returns the provider's
+// name when the IP is one of those, so the count can be read in context instead of as a verdict.
+const SHARED_PROVIDERS = [
+  [/vercel/i, "Vercel"], [/cloudflare/i, "Cloudflare"], [/fastly/i, "Fastly"], [/akamai/i, "Akamai"],
+  [/netlify/i, "Netlify"], [/cloudfront/i, "Amazon CloudFront"], [/github/i, "GitHub"], [/bunny|b-cdn/i, "Bunny CDN"],
+  [/edgecast|edgio/i, "Edgio"], [/stackpath|highwinds/i, "StackPath"], [/wpengine/i, "WP Engine"], [/squarespace/i, "Squarespace"],
+  [/wix/i, "Wix"], [/shopify/i, "Shopify"],
+];
+function sharedProvider(a) {
+  if (!a) return null;
+  const usage = String(a.usageType || ""), dom = String(a.domain || ""), isp = String(a.isp || "");
+  const hit = SHARED_PROVIDERS.find(([re]) => re.test(dom) || re.test(isp));
+  if (hit) return hit[1];
+  if (/content delivery/i.test(usage)) return dom || isp || "a content delivery network";
+  return null;
+}
+
 function abuseBlock(a) {
   if (!a) return muted(!(current && current.ip) ? 'Domain did not resolve to an IP — no IP reputation to check.' : (keyOn('abuseipdb') ? 'No AbuseIPDB record for this IP.' : 'Set ABUSEIPDB_API_KEY to enable AbuseIPDB.'));
   if (isErr(a)) return failNote(a);
   const sc = a.abuseConfidenceScore || 0;
-  return kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good"), "Confidence (0–100) that this IP is malicious, based on community reports. 50+ is high, 100 is certain.") +
-         kvrow("Total reports", a.totalReports||0, "", "How many times this IP was reported for abuse in the last 90 days.") +
+  const shared = sharedProvider(a);
+  const sharedNote = shared
+    ? '<div class="muted" style="font-size:11px;margin:0 0 8px">Shared address: ' + esc(shared) + ' serves many unrelated websites from this IP, so its reports are mostly about other sites, not this one. Judge the site by its domain and content, not this count.</div>'
+    : "";
+  return sharedNote +
+         kvrow("Confidence", sc + "/100", sc>=50?"bad":(sc>=20?"warn":"good"), "Confidence (0–100) that this IP is malicious, based on community reports. 50+ is high, 100 is certain.") +
+         kvrow("Total reports", (a.totalReports||0) + (shared && a.totalReports ? " (shared address)" : ""), "", shared ? "Reports on this IP in the last 90 days, across every site that shares it." : "How many times this IP was reported for abuse in the last 90 days.") +
          kvrow("Last reported", a.lastReportedAt || "—") +
          kvrow("Country", a.countryCode || "?") +
          kvrow("Usage type", a.usageType || "?", "", "What the IP is used for (e.g. Data Center / CDN, ISP, hosting).") +
