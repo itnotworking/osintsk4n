@@ -118,7 +118,7 @@ async def analyze(request: Request, target: str = Form(...), fresh: str = Form("
 
 
 @app.post("/urlscan/submit", response_class=JSONResponse)
-async def urlscan_submit(request: Request, target: str = Form(...)):
+async def urlscan_submit(request: Request, target: str = Form(...), auto: str = Form("")):
     ip = _client_ip(request)
     if not _rate_ok(ip):
         return JSONResponse({"error": "Rate limit exceeded — slow down."}, status_code=429)
@@ -127,7 +127,7 @@ async def urlscan_submit(request: Request, target: str = Form(...)):
     scan_url, reg = await asyncio.to_thread(analyzer.scan_url_for, target)
     if not scan_url:
         return JSONResponse({"error": "Could not derive a URL to scan."}, status_code=400)
-    res = await asyncio.to_thread(analyzer.urlscan_submit, scan_url)
+    res = await asyncio.to_thread(analyzer.urlscan_submit, scan_url, auto == "1")
     res["reg"] = reg
     res["scan_url"] = scan_url
     return JSONResponse(res, status_code=200 if res.get("uuid") else 502)

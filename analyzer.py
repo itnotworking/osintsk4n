@@ -930,8 +930,31 @@ def urlscan_search(domain):
     }
 
 
-def urlscan_submit(target_url):
-    """Submit a fresh urlscan.io scan. Returns {uuid} or {error}."""
+# Automatic scans submitted in the last day, by URL. Scan history is cached for 30 minutes, so a repeat lookup
+# would still see "no recent scan" and submit again; it reuses the scan it already started instead.
+_auto_scans = {}
+_auto_scans_lock = threading.Lock()
+
+
+def urlscan_submit(target_url, reuse=False):
+    """Submit a fresh urlscan.io scan. Returns {uuid} or {error}. With reuse=True (automatic scans), returns the
+    scan submitted for the same URL in the last 24 hours instead of starting another."""
+    if reuse:
+        with _auto_scans_lock:
+            hit = _auto_scans.get(target_url)
+            if hit and time.time() - hit[1] < 86400:
+                return {"uuid": hit[0], "reused": True}
+    res = _urlscan_submit(target_url)
+    if reuse and res.get("uuid"):
+        with _auto_scans_lock:
+            now = time.time()
+            for k in [k for k, v in _auto_scans.items() if now - v[1] >= 86400]:
+                del _auto_scans[k]
+            _auto_scans[target_url] = (res["uuid"], now)
+    return res
+
+
+def _urlscan_submit(target_url):
     if not URLSCAN_API_KEY:
         return {"error": "Live scan needs URLSCAN_API_KEY (not configured)."}
     try:

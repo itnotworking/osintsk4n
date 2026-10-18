@@ -1441,6 +1441,7 @@ async function runLiveScan(targetOverride, auto) {
     "The page scan couldn't run right now. Try again in a minute.</div>" + liveBtn('▶ Retry'); };
   try {
     const f = new FormData(); f.append("target", target);
+    if (auto) f.append("auto", "1");   // the server reuses an automatic scan from the last day instead of re-submitting
     const sub = await (await fetch("/urlscan/submit", { method: "POST", body: f })).json();
     if (!alive()) { clearInterval(timer); return; }
     if (!sub.uuid) return failed();
