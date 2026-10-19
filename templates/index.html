@@ -3,7 +3,27 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SC4N</title>
+<title>SC4N: Free Phishing, IP, Domain and Phone Number Lookup</title>
+<meta name="description" content="Check a suspicious domain, URL, IP, email, phone number or file hash in one search. Get a free plain-English verdict and ticket-ready notes. No account needed.">
+<link rel="canonical" href="https://sc4n.lol/">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#0c0c0e">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="SC4N">
+<meta property="og:url" content="https://sc4n.lol/">
+<meta property="og:title" content="SC4N: Free Phishing, IP, Domain and Phone Number Lookup">
+<meta property="og:description" content="Check a suspicious domain, URL, IP, email, phone number or file hash in one search. Get a free plain-English verdict and ticket-ready notes. No account needed.">
+<meta property="og:image" content="https://sc4n.lol/static/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="SC4N: free threat lookup for SOC analysts">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="SC4N: Free Phishing, IP, Domain and Phone Number Lookup">
+<meta name="twitter:description" content="Check a suspicious domain, URL, IP, email, phone number or file hash in one search. Get a free plain-English verdict and ticket-ready notes. No account needed.">
+<meta name="twitter:image" content="https://sc4n.lol/static/og-image.png">
+{% if gsv %}<meta name="google-site-verification" content="{{ gsv }}">{% endif %}
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "WebApplication", "name": "SC4N", "url": "https://sc4n.lol/", "description": "Check a suspicious domain, URL, IP, email, phone number or file hash in one search. Get a free plain-English verdict and ticket-ready notes. No account needed.", "image": "https://sc4n.lol/static/og-image.png", "applicationCategory": "SecurityApplication", "operatingSystem": "Any (web browser)", "isAccessibleForFree": true, "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "featureList": ["Domain and URL reputation", "IP address reputation", "Email address breach and infostealer checks", "Phone number scam and robocall complaints", "File hash malware lookups", "IP range abuse checks", "Automatic page screenshots", "Ticket-ready notes"]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is SC4N free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. There is no account and no sign-up. Lookups are only rate limited to keep the service fair for everyone."}}, {"@type": "Question", "name": "Is it safe to check a phishing link here?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. SC4N never opens the link in your browser. It looks the address up in threat intelligence sources and, when the site hasn't been scanned recently, captures a screenshot from an isolated scanner. You can paste defanged links such as hxxp://example[.]com."}}, {"@type": "Question", "name": "How do I check whether a phone number is a scam?", "acceptedAnswer": {"@type": "Answer", "text": "Enter the number in any format. US numbers work without a country code; for other countries, start with + and the country code. SC4N checks consumer complaints filed with US regulators, whether the number was given out as a call-back line in scams, and what kind of line it is, including internet (VoIP) numbers."}}, {"@type": "Question", "name": "What does Inconclusive mean?", "acceptedAnswer": {"@type": "Answer", "text": "Some sources didn't respond during the lookup, so there wasn't enough evidence for a reliable verdict. Run it again shortly instead of treating the result as clean."}}, {"@type": "Question", "name": "Who is SC4N for?", "acceptedAnswer": {"@type": "Answer", "text": "SOC and help desk analysts triaging phishing reports and security alerts, and anyone who wants to check a suspicious link, email address, IP address or caller before acting on it."}}]}</script>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=2">
 <link rel="stylesheet" href="/static/style.css?v={{ css_v }}">
 </head>
@@ -36,6 +56,55 @@
   <div id="recent" class="recent"></div>
   <div id="status" class="status"></div>
   <div id="output"></div>
+
+  <!-- what SC4N is, for people and search engines; always visible below the results -->
+  <section class="about" aria-labelledby="about-h">
+    <h2 id="about-h">Free threat lookup for SOC analysts</h2>
+    <p class="about-lead">SC4N checks a suspicious domain, URL, IP address, email address, phone number, file hash or
+      IP range in one search and gives you a plain-English verdict with the evidence behind it. It was built for
+      analysts triaging phishing reports and security alerts, and anyone can use it for free without an account.</p>
+    <div class="about-grid">
+      <div>
+        <h3>What you can check</h3>
+        <ul>
+          <li><b>Domains and URLs:</b> registration age, look-alike and brand impersonation checks, email security
+            (SPF, DKIM and DMARC), hosting, threat feeds, and a fresh screenshot showing where the page really lands.</li>
+          <li><b>IP addresses:</b> abuse reports, security vendor detections, proxy, VPN and Tor detection, public
+            blocklists, open ports and known vulnerabilities.</li>
+          <li><b>Email addresses:</b> appearances in infostealer logs and data breaches, disposable address checks
+            and fraud scoring.</li>
+          <li><b>Phone numbers:</b> consumer complaints about scam calls, robocalls and texts, call-back numbers used
+            in scams, and the line type, including internet (VoIP) numbers.</li>
+          <li><b>File hashes:</b> MD5, SHA-1 and SHA-256 lookups against known malware and sandbox results.</li>
+          <li><b>IP ranges:</b> how many addresses in a CIDR block have recent abuse reports.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>How the verdict works</h3>
+        <p>Each lookup gathers evidence from several threat intelligence sources and scores it. A source that
+          doesn't answer is never treated as clean: if too little evidence comes back, SC4N says the lookup is
+          inconclusive instead of guessing. Every result includes a summary and copy-ready notes for the security
+          team, executives and end users.</p>
+        <h3>Privacy</h3>
+        <p>There are no accounts. Your recent searches are kept only in your own browser. Results are held on the
+          server for up to 30 minutes so repeat lookups are fast, then discarded. Before an automatic page scan,
+          SC4N removes query strings and skips links that look like they contain an email address or a token.</p>
+      </div>
+    </div>
+    <h3>Questions</h3>
+    <dl class="faq">
+      <dt>Is SC4N free?</dt>
+      <dd>Yes. There is no account and no sign-up. Lookups are only rate limited to keep the service fair for everyone.</dd>
+      <dt>Is it safe to check a phishing link here?</dt>
+      <dd>Yes. SC4N never opens the link in your browser. It looks the address up in threat intelligence sources and, when the site hasn't been scanned recently, captures a screenshot from an isolated scanner. You can paste defanged links such as hxxp://example[.]com.</dd>
+      <dt>How do I check whether a phone number is a scam?</dt>
+      <dd>Enter the number in any format. US numbers work without a country code; for other countries, start with + and the country code. SC4N checks consumer complaints filed with US regulators, whether the number was given out as a call-back line in scams, and what kind of line it is, including internet (VoIP) numbers.</dd>
+      <dt>What does Inconclusive mean?</dt>
+      <dd>Some sources didn't respond during the lookup, so there wasn't enough evidence for a reliable verdict. Run it again shortly instead of treating the result as clean.</dd>
+      <dt>Who is SC4N for?</dt>
+      <dd>SOC and help desk analysts triaging phishing reports and security alerts, and anyone who wants to check a suspicious link, email address, IP address or caller before acting on it.</dd>
+    </dl>
+  </section>
 </div>
 
 <script>

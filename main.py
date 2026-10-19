@@ -10,7 +10,7 @@ import asyncio
 from collections import defaultdict, deque
 
 from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -21,6 +21,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 # changes with every deploy, so browsers fetch the new stylesheet instead of a cached old one
 CSS_VERSION = str(int(os.path.getmtime("static/style.css")))
+# SEO: one canonical site. sc4n.app served a full duplicate copy, which splits search ranking.
+CANONICAL_HOST = "sc4n.lol"
+ALIAS_HOSTS = {"sc4n.app", "www.sc4n.app"}
+# Google Search Console HTML-tag verification code, set in Render; no code change needed to verify
+GOOGLE_SITE_VERIFICATION = os.environ.get("GOOGLE_SITE_VERIFICATION", "").strip().strip('"')
+PAGE_UPDATED = __import__("datetime").date.fromtimestamp(os.path.getmtime("templates/index.html")).isoformat()
 
 # --- simple in-memory rate limit (per client IP) ---------------------------
 RATE_LIMIT = 20          # requests
@@ -51,6 +57,16 @@ def _rate_ok(ip: str) -> bool:
 
 
 @app.middleware("http")
+async def canonical_host(request: Request, call_next):
+    host = (request.headers.get("host") or "").split(":")[0].lower()
+    if host in ALIAS_HOSTS:
+        url = f"https://{CANONICAL_HOST}{request.url.path}" + (f"?{request.url.query}" if request.url.query else "")
+        # 301 for pages; 308 keeps the method and body for anything posted to the old host
+        return RedirectResponse(url, status_code=301 if request.method in ("GET", "HEAD") else 308)
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def security_headers(request: Request, call_next):
     resp = await call_next(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -69,7 +85,24 @@ async def security_headers(request: Request, call_next):
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "css_v": CSS_VERSION})
+    return templates.TemplateResponse("index.html", {"request": request, "css_v": CSS_VERSION,
+                                                     "gsv": GOOGLE_SITE_VERIFICATION})
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots():
+    # index the page; keep crawlers off the lookup endpoints, which cost API quota
+    return ("User-agent: *\nAllow: /\nDisallow: /analyze\nDisallow: /precheck\nDisallow: /urlscan/\n"
+            "Disallow: /health\n\nSitemap: https://sc4n.lol/sitemap.xml\n")
+
+
+@app.get("/sitemap.xml")
+async def sitemap():
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+           f'  <url><loc>https://sc4n.lol/</loc><lastmod>{PAGE_UPDATED}</lastmod></url>\n'
+           '</urlset>\n')
+    return Response(xml, media_type="application/xml")
 
 
 @app.get("/health")
