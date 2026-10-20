@@ -192,6 +192,8 @@ async function analyze(fresh) {
   let timedOut = false;
   const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, 55000);
   setRunning(true);
+  // the About section is for first-time visitors and crawlers; once a search runs it is just scroll
+  document.body.classList.add("searched");
   startLoader(target);
   $("output").innerHTML = "";
   torNotice(target, controller);
