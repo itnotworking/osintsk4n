@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SC4N Threat Lookup</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header><span class="wm">SC<span class="x">4</span>N</span><span class="sub">Threat lookup</span></header>
+  <form id="f" autocomplete="off">
+    <input id="q" placeholder="Domain, URL, IP, email, phone or hash" spellcheck="false" autofocus>
+    <button type="submit">Check</button>
+  </form>
+  <button id="site" class="site" type="button" hidden>Check this site: <span id="host"></span></button>
+  <div id="out" aria-live="polite"></div>
+  <footer>You can also right-click a link or highlighted text and choose Check with SC4N.</footer>
+  <script src="popup.js"></script>
+</body>
+</html>

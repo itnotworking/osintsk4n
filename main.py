@@ -27,6 +27,7 @@ ALIAS_HOSTS = {"sc4n.app", "www.sc4n.app"}
 # Google Search Console HTML-tag verification code, set in Render; no code change needed to verify
 GOOGLE_SITE_VERIFICATION = os.environ.get("GOOGLE_SITE_VERIFICATION", "").strip().strip('"')
 PAGE_UPDATED = __import__("datetime").date.fromtimestamp(os.path.getmtime("templates/index.html")).isoformat()
+PRIVACY_UPDATED = __import__("datetime").date.fromtimestamp(os.path.getmtime("templates/privacy.html")).isoformat()
 
 # --- simple in-memory rate limit (per client IP) ---------------------------
 RATE_LIMIT = 20          # requests
@@ -45,8 +46,17 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+_last_sweep = [0.0]
+
+
 def _rate_ok(ip: str) -> bool:
     now = time.time()
+    # forget addresses with no requests in the last window, so an IP is held for a minute or two, not until
+    # the next restart (the privacy page says so)
+    if now - _last_sweep[0] > RATE_WINDOW:
+        for k in [k for k, v in _hits.items() if not v or now - v[-1] > RATE_WINDOW]:
+            del _hits[k]
+        _last_sweep[0] = now
     q = _hits[ip]
     while q and now - q[0] > RATE_WINDOW:
         q.popleft()
@@ -89,6 +99,12 @@ async def home(request: Request):
                                                      "gsv": GOOGLE_SITE_VERIFICATION})
 
 
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy(request: Request):
+    # also the privacy policy the Chrome Web Store listing for the extension points to
+    return templates.TemplateResponse("privacy.html", {"request": request, "css_v": CSS_VERSION})
+
+
 @app.get("/robots.txt", response_class=PlainTextResponse)
 async def robots():
     # index the page; keep crawlers off the lookup endpoints, which cost API quota
@@ -101,6 +117,7 @@ async def sitemap():
     xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
            f'  <url><loc>https://sc4n.lol/</loc><lastmod>{PAGE_UPDATED}</lastmod></url>\n'
+           f'  <url><loc>https://sc4n.lol/privacy</loc><lastmod>{PRIVACY_UPDATED}</lastmod></url>\n'
            '</urlset>\n')
     return Response(xml, media_type="application/xml")
 

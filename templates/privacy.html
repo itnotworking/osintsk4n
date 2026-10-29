@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy | SC4N</title>
+<meta name="description" content="What SC4N and the SC4N Chrome extension do with the indicators you check: no accounts, no cookies, no analytics.">
+<link rel="canonical" href="https://sc4n.lol/privacy">
+<meta name="theme-color" content="#0c0c0e">
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=2">
+<link rel="stylesheet" href="/static/style.css?v={{ css_v }}">
+</head>
+<body>
+<header>
+  <a href="/" class="brand-link" aria-label="SC4N home"><h1 class="brand"><span class="wm">SC<span class="wm-x">4</span>N</span></h1></a>
+</header>
+<div class="wrap">
+  <section class="about privacy" aria-labelledby="privacy-h">
+    <h2 id="privacy-h">Privacy</h2>
+    <p class="about-lead">SC4N is a free threat lookup with no accounts. This page explains what happens to the
+      domains, URLs, IP addresses, email addresses, phone numbers and file hashes you check, on the website and in
+      the SC4N Chrome extension. Last updated October 28, 2026.</p>
+
+    <h3>What you check</h3>
+    <p>When you run a lookup, the indicator you entered is sent to SC4N's server. To build the result, SC4N sends
+      that indicator to the threat intelligence services it queries. Those services receive only the indicator
+      from SC4N's server, not your browser, your IP address or anything that identifies you.</p>
+    <p>For domains and URLs that haven't been scanned in the last day, SC4N asks a page scanning service to take a
+      fresh screenshot. That scan is unlisted: it isn't published, and only SC4N and the scanning service's vetted
+      security customers can see it. Before it's sent, SC4N removes query strings and fragments, and it doesn't
+      send links whose path looks like it contains an email address or a token automatically.</p>
+
+    <h3>What SC4N keeps</h3>
+    <ul>
+      <li>No accounts, no cookies, no analytics and no advertising.</li>
+      <li>Lookup results are held in the server's memory for up to 30 minutes so a repeat lookup is fast, then
+        discarded. They are not written to a database.</li>
+      <li>The addresses sent for automatic page scans are held in memory for 24 hours, so the same page isn't
+        scanned twice.</li>
+      <li>Your recent searches are stored only in your own browser, and the Clear button on the site removes them.</li>
+      <li>Your IP address is held in memory for a minute or two to enforce the rate limit, and the hosting provider
+        keeps standard request logs (such as IP address, time and page requested) for security and operations.</li>
+    </ul>
+
+    <h3>The SC4N Chrome extension</h3>
+    <ul>
+      <li>It sends nothing until you ask it to check something, by typing it into the popup, pressing Check this
+        site, or choosing Check with SC4N from the right-click menu.</li>
+      <li>It then sends only that item to sc4n.lol, or opens the full report on sc4n.lol in a new tab.</li>
+      <li>For links and pages it removes the query string and fragment first, and for Check this site it sends only
+        the site's name.</li>
+      <li>It doesn't read the pages you visit, track your browsing, or store anything about you.</li>
+    </ul>
+
+    <p class="privacy-back"><a href="/">Back to SC4N</a></p>
+  </section>
+</div>
+</body>
+</html>
