@@ -448,6 +448,7 @@ body.searched .about { display: none; }
 .about p { margin: 0 0 6px; }
 .faq { margin: 0; max-width: 940px; }
 .privacy-back { margin-top: 18px; }
+.about-more { margin-top: 8px; }
 .privacy { margin-top: 48px; }
 .privacy ul { max-width: 940px; }
 .privacy p { max-width: 940px; margin-bottom: 10px; }
